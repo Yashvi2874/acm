@@ -13,7 +13,7 @@ export function generateSatellites(): Satellite[] {
     const orbitRadius = 6771 + r() * 1200;
     const inclination = r() * Math.PI;
     const phase = r() * Math.PI * 2;
-    const speed = 0.00004 + r() * 0.00002;
+    const speed = 0.001 + r() * 0.0005;
     const status = statuses[Math.floor(r() * statuses.length)];
     const x = orbitRadius * Math.cos(phase) * Math.cos(inclination);
     const y = orbitRadius * Math.sin(phase);
