@@ -42,44 +42,43 @@ function buildSatelliteGroup(color: number): THREE.Group {
   const group = new THREE.Group();
   const bodyMat = new THREE.MeshPhongMaterial({ color, emissive: color, emissiveIntensity: 0.25, shininess: 120 });
   // Main bus
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.18, 0.18), bodyMat);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.30, 0.30), bodyMat);
   body.userData.isBody = true;
   group.add(body);
   // Solar panels
   const panelMat = new THREE.MeshPhongMaterial({ color: 0x1a3a6a, emissive: 0x0a1a3a, emissiveIntensity: 0.4, shininess: 200, side: THREE.DoubleSide });
-  [-0.33, 0.33].forEach(px => {
-    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.01, 0.16), panelMat);
+  [-0.52, 0.52].forEach(px => {
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.015, 0.24), panelMat);
     panel.position.set(px, 0, 0);
     group.add(panel);
-    // Panel grid lines
     const frameMat = new THREE.LineBasicMaterial({ color: 0x4488cc, transparent: true, opacity: 0.6 });
     const pts = [
-      new THREE.Vector3(px - 0.19, 0, -0.08), new THREE.Vector3(px + 0.19, 0, -0.08),
-      new THREE.Vector3(px + 0.19, 0, 0.08), new THREE.Vector3(px - 0.19, 0, 0.08),
-      new THREE.Vector3(px - 0.19, 0, -0.08),
+      new THREE.Vector3(px - 0.27, 0, -0.12), new THREE.Vector3(px + 0.27, 0, -0.12),
+      new THREE.Vector3(px + 0.27, 0, 0.12), new THREE.Vector3(px - 0.27, 0, 0.12),
+      new THREE.Vector3(px - 0.27, 0, -0.12),
     ];
     group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), frameMat));
     group.add(new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(px, 0, -0.08), new THREE.Vector3(px, 0, 0.08)]),
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(px, 0, -0.12), new THREE.Vector3(px, 0, 0.12)]),
       frameMat
     ));
   });
   // Antenna dish
-  const dish = new THREE.Mesh(new THREE.CircleGeometry(0.07, 12),
+  const dish = new THREE.Mesh(new THREE.CircleGeometry(0.11, 12),
     new THREE.MeshPhongMaterial({ color: 0xcccccc, shininess: 200, side: THREE.DoubleSide }));
-  dish.position.set(0, 0.13, 0);
+  dish.position.set(0, 0.22, 0);
   dish.rotation.x = -Math.PI / 4;
   group.add(dish);
   // Antenna stem
   const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.1, 6),
     new THREE.MeshPhongMaterial({ color: 0xaaaaaa }));
-  stem.position.set(0, 0.08, 0);
+  stem.position.set(0, 0.14, 0);
   group.add(stem);
   // Thruster nozzle
   const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.08, 8),
     new THREE.MeshPhongMaterial({ color: 0x888888, shininess: 60 }));
   nozzle.rotation.z = Math.PI / 2;
-  nozzle.position.set(-0.18, 0, 0);
+  nozzle.position.set(-0.28, 0, 0);
   group.add(nozzle);
   return group;
 }
@@ -172,8 +171,6 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
 
     // ── DEBRIS — irregular rocky shapes ──────────────────────────────────
     const debrisMeshes: THREE.Mesh[] = [];
-    // Bright, visible colors — orange/red like tracked debris in real visualizations
-    const debrisColors = [0xff6b35, 0xff4444, 0xff8c00, 0xffaa00, 0xff3366, 0xff5500, 0xffcc00];
     let seed = 77;
     const rand = () => { seed = (seed * 1664525 + 1013904223) & 0xffffffff; return (seed >>> 0) / 0xffffffff; };
 
@@ -181,16 +178,16 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
       // Mix of low-poly shapes for irregular look
       const shapeType = i % 3;
       let geo: THREE.BufferGeometry;
-      const baseSize = 0.25 + rand() * 0.2; // 0.25–0.45 units — clearly visible
+      const baseSize = 0.10 + rand() * 0.06; // smaller debris
       if (shapeType === 0) geo = new THREE.IcosahedronGeometry(baseSize, 0);
       else if (shapeType === 1) geo = new THREE.TetrahedronGeometry(baseSize * 1.1, 0);
       else geo = new THREE.OctahedronGeometry(baseSize, 0);
 
-      const color = debrisColors[i % debrisColors.length];
+      const color = 0xff6b35; // all same orange
       const mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
         color,
         emissive: color,
-        emissiveIntensity: 0.5, // glow so they're visible on dark side too
+        emissiveIntensity: 0.5,
         shininess: 40,
         flatShading: true,
       }));
@@ -214,7 +211,7 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
       satGroups.set(sat.id, group);
 
       const hitMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.35, 8, 8),
+        new THREE.SphereGeometry(0.55, 8, 8),
         new THREE.MeshBasicMaterial({ visible: false })
       );
       hitMesh.position.copy(toScene(...sat.pos));

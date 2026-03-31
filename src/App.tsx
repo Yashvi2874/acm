@@ -34,7 +34,7 @@ export default function App() {
       timeRef.current = ts;
       if (!hoveredIdRef.current) {
         setSatellites(prev => prev.map(sat => {
-          const newPhase = sat.orbitPhase + sat.orbitSpeed * dt * 60;
+          const newPhase = sat.orbitPhase + sat.orbitSpeed * dt * 10;
           const r = sat.orbitRadius;
           const inc = sat.orbitInclination;
           return {
