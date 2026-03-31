@@ -1,12 +1,13 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import TopBar from './components/TopBar';
 import SatelliteList from './components/SatelliteList';
 import GlobeScene from './components/GlobeScene';
 import DetailPanel from './components/DetailPanel';
 import Timeline from './components/Timeline';
 import Tooltip from './components/Tooltip';
+import ManeuverModal from './components/ManeuverModal';
 import { generateSatellites, generateDebris, generateManeuvers } from './mockData';
-import type { Satellite, DebrisPoint } from './types';
+import type { Satellite, DebrisPoint, Maneuver, ManeuverPlan } from './types';
 
 const INITIAL_SATS = generateSatellites();
 const INITIAL_DEBRIS = generateDebris();
@@ -15,27 +16,34 @@ export default function App() {
   const [satellites, setSatellites] = useState<Satellite[]>(INITIAL_SATS);
   const [debris] = useState<DebrisPoint[]>(INITIAL_DEBRIS);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [tooltip, setTooltip] = useState<{ sat: Satellite | null; x: number; y: number }>({ sat: null, x: 0, y: 0 });
-  const maneuvers = useMemo(() => generateManeuvers(INITIAL_SATS), []);
+  const [maneuvers, setManeuvers] = useState<Maneuver[]>(() => generateManeuvers(INITIAL_SATS));
+  const [maneuverModal, setManeuverModal] = useState(false);
+  const [maneuverPlan, setManeuverPlan] = useState<ManeuverPlan | null>(null);
+  const [flaringId, setFlaringId] = useState<string | null>(null);
   const timeRef = useRef(0);
+  const hoveredIdRef = useRef<string | null>(null);
 
-  // Animate satellites along orbits
+  // Animate satellites — pause on hover
   useEffect(() => {
     let raf: number;
     const animate = (ts: number) => {
       const dt = Math.min((ts - timeRef.current) / 1000, 0.05);
       timeRef.current = ts;
-      setSatellites(prev => prev.map(sat => {
-        const newPhase = sat.orbitPhase + sat.orbitSpeed * dt * 60;
-        const r = sat.orbitRadius;
-        const inc = sat.orbitInclination;
-        const x = r * Math.cos(newPhase) * Math.cos(inc);
-        const y = r * Math.sin(newPhase);
-        const z = r * Math.cos(newPhase) * Math.sin(inc);
-        return { ...sat, orbitPhase: newPhase, pos: [x, y, z] };
-      }));
-      setTick(t => t + 1);
+      if (!hoveredIdRef.current) {
+        setSatellites(prev => prev.map(sat => {
+          const newPhase = sat.orbitPhase + sat.orbitSpeed * dt * 60;
+          const r = sat.orbitRadius;
+          const inc = sat.orbitInclination;
+          return {
+            ...sat, orbitPhase: newPhase,
+            pos: [r * Math.cos(newPhase) * Math.cos(inc), r * Math.sin(newPhase), r * Math.cos(newPhase) * Math.sin(inc)],
+          };
+        }));
+        setTick(t => t + 1);
+      }
       raf = requestAnimationFrame(animate);
     };
     raf = requestAnimationFrame(animate);
@@ -44,19 +52,73 @@ export default function App() {
 
   const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
-  const handleHover = (id: string | null, x: number, y: number) => {
-    const sat = id ? satellites.find(s => s.id === id) ?? null : null;
-    setTooltip({ sat, x, y });
-  };
+  const handleHover = useCallback((id: string | null, x: number, y: number) => {
+    hoveredIdRef.current = id;
+    setHoveredId(id);
+    setTooltip({ sat: id ? satellites.find(s => s.id === id) ?? null : null, x, y });
+  }, [satellites]);
+
+  const handleConfirmManeuver = useCallback((plan: ManeuverPlan) => {
+    const fuelCost = Math.round(plan.deltaV * 20);
+    const mnvId = `MNV-${Date.now()}`;
+
+    // Apply orbit change immediately if scheduled now, else just schedule
+    setSatellites(prev => prev.map(sat => {
+      if (sat.id !== plan.satelliteId) return sat;
+      let newRadius = sat.orbitRadius;
+      if (plan.direction === 'prograde') newRadius += plan.deltaV * 200;
+      else if (plan.direction === 'retrograde') newRadius -= plan.deltaV * 200;
+      newRadius = Math.max(6500, newRadius);
+
+      const newFuel = Math.max(0, sat.fuel - fuelCost);
+      const isNow = plan.scheduledHour === 0;
+
+      return {
+        ...sat,
+        fuel: newFuel,
+        orbitRadius: isNow ? newRadius : sat.orbitRadius,
+        status: newFuel < 20 ? 'critical' : newFuel < 50 ? 'warning' : sat.status,
+        collisionRisk: plan.type === 'avoidance' ? false : sat.collisionRisk,
+        lastManeuver: isNow ? mnvId : sat.lastManeuver,
+      };
+    }));
+
+    // Add to maneuver list
+    const newMnv: Maneuver = {
+      id: mnvId,
+      satelliteId: plan.satelliteId,
+      type: plan.type,
+      startHour: plan.scheduledHour,
+      durationHours: plan.deltaV * 0.4,
+      deltaV: plan.deltaV,
+      executed: plan.scheduledHour === 0,
+    };
+    setManeuvers(prev => [...prev, newMnv]);
+
+    // Trigger flare if immediate
+    if (plan.scheduledHour === 0) {
+      setFlaringId(plan.satelliteId);
+      setTimeout(() => setFlaringId(null), 3000);
+    }
+
+    setManeuverModal(false);
+    setManeuverPlan(null);
+  }, []);
+
+  const handleOpenModal = useCallback(() => {
+    if (!selectedId) return;
+    const sat = satellites.find(s => s.id === selectedId);
+    if (!sat) return;
+    setManeuverPlan({ satelliteId: selectedId, type: 'avoidance', direction: 'prograde', deltaV: 0.5, scheduledHour: 0 });
+    setManeuverModal(true);
+  }, [selectedId, satellites]);
 
   return (
     <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg-primary)' }}>
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.3)} }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
-        @keyframes scanline {
-          0%{transform:translateY(-100%)} 100%{transform:translateY(100vh)}
-        }
+        @keyframes flare { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(4)} }
       `}</style>
 
       <TopBar satellites={satellites} />
@@ -72,23 +134,24 @@ export default function App() {
             background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.015) 2px, rgba(0,212,255,0.015) 4px)',
           }} />
 
-          {/* Corner decorations */}
           <CornerDeco pos="tl" />
           <CornerDeco pos="tr" />
           <CornerDeco pos="bl" />
           <CornerDeco pos="br" />
 
-          {/* Globe */}
           <GlobeScene
             satellites={satellites}
             debris={debris}
             selectedId={selectedId}
+            hoveredId={hoveredId}
+            maneuverPlan={maneuverModal ? maneuverPlan : null}
+            flaringId={flaringId}
             onSelect={setSelectedId}
             onHover={handleHover}
             tick={tick}
           />
 
-          {/* HUD overlay */}
+          {/* HUD */}
           <div style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 2, pointerEvents: 'none' }}>
             <HudStats satellites={satellites} />
           </div>
@@ -101,13 +164,41 @@ export default function App() {
               <div>CLICK — SELECT</div>
             </div>
           </div>
+
+          {/* Ghost orbit legend */}
+          {maneuverModal && maneuverPlan && (
+            <div style={{
+              position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 2, pointerEvents: 'none',
+              background: 'rgba(2,8,23,0.9)', border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 6, padding: '6px 14px',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <div style={{ width: 24, height: 1, borderTop: '2px dashed rgba(255,255,255,0.7)' }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', letterSpacing: 1 }}>
+                PREDICTED ORBIT
+              </span>
+            </div>
+          )}
         </div>
 
-        <DetailPanel satellite={selectedSat} />
+        <DetailPanel
+          satellite={selectedSat}
+          maneuvers={maneuvers}
+          onPlanManeuver={handleOpenModal}
+        />
       </div>
 
       <Timeline maneuvers={maneuvers} />
       <Tooltip satellite={tooltip.sat} x={tooltip.x} y={tooltip.y} />
+
+      {maneuverModal && selectedSat && (
+        <ManeuverModal
+          satellite={selectedSat}
+          onConfirm={handleConfirmManeuver}
+          onCancel={() => { setManeuverModal(false); setManeuverPlan(null); }}
+        />
+      )}
     </div>
   );
 }

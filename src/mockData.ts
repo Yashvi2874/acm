@@ -8,7 +8,7 @@ const rng = (seed: number) => {
 export function generateSatellites(): Satellite[] {
   const rand = rng(42);
   const statuses: Satellite['status'][] = ['nominal', 'nominal', 'nominal', 'warning', 'critical'];
-  return Array.from({ length: 50 }, (_, i) => {
+  return Array.from({ length: 10 }, (_, i) => {
     const r = rand;
     const orbitRadius = 6771 + r() * 1200;
     const inclination = r() * Math.PI;
@@ -37,9 +37,10 @@ export function generateSatellites(): Satellite[] {
 
 export function generateDebris(): DebrisPoint[] {
   const rand = rng(99);
-  return Array.from({ length: 10000 }, () => {
+  return Array.from({ length: 50 }, () => {
     const r = rand;
-    const radius = 6571 + r() * 2000;
+    // Keep debris in same orbital band as satellites (LEO: 6771–7971 km)
+    const radius = 6771 + r() * 1200;
     const inc = r() * Math.PI;
     const phase = r() * Math.PI * 2;
     const speed = 0.0003 + r() * 0.0008;
@@ -56,9 +57,9 @@ export function generateDebris(): DebrisPoint[] {
 export function generateManeuvers(satellites: Satellite[]): Maneuver[] {
   const rand = rng(77);
   const types: Maneuver['type'][] = ['avoidance', 'station-keeping', 'recovery'];
-  return Array.from({ length: 18 }, (_, i) => ({
+  return Array.from({ length: 6 }, (_, i) => ({
     id: `MNV-${i + 1}`,
-    satelliteId: satellites[Math.floor(rand() * 50)].id,
+    satelliteId: satellites[Math.floor(rand() * satellites.length)].id,
     type: types[Math.floor(rand() * 3)],
     startHour: rand() * 22,
     durationHours: 0.5 + rand() * 2,

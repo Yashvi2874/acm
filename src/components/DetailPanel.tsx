@@ -1,11 +1,19 @@
-import type { Satellite } from '../types';
+import { useEffect, useState } from 'react';
+import type { Satellite, Maneuver } from '../types';
 
-interface Props { satellite: Satellite | null; }
+interface Props {
+  satellite: Satellite | null;
+  maneuvers: Maneuver[];
+  onPlanManeuver: () => void;
+}
 
 const STATUS_COLOR = { nominal: 'var(--green)', warning: 'var(--amber)', critical: 'var(--red)' };
 const STATUS_BG = { nominal: 'var(--green-dim)', warning: 'var(--amber-dim)', critical: 'var(--red-dim)' };
+const TYPE_COLOR: Record<string, string> = {
+  avoidance: '#ff3b3b', 'station-keeping': '#00d4ff', recovery: '#00ff88',
+};
 
-export default function DetailPanel({ satellite }: Props) {
+export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Props) {
   if (!satellite) {
     return (
       <div style={{
@@ -29,6 +37,8 @@ export default function DetailPanel({ satellite }: Props) {
   const sat = satellite;
   const color = STATUS_COLOR[sat.status];
   const fuelColor = sat.fuel < 20 ? 'var(--red)' : sat.fuel < 50 ? 'var(--amber)' : 'var(--green)';
+  const satManeuvers = maneuvers.filter(m => m.satelliteId === sat.id);
+  const nextBurn = satManeuvers.filter(m => !m.executed).sort((a, b) => a.startHour - b.startHour)[0] ?? null;
 
   return (
     <div style={{
@@ -44,7 +54,18 @@ export default function DetailPanel({ satellite }: Props) {
             borderRadius: 3, color, background: STATUS_BG[sat.status], border: `1px solid ${color}`,
           }}>{sat.status.toUpperCase()}</span>
         </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>{sat.name}</div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', marginBottom: 10 }}>{sat.name}</div>
+
+        {/* Plan Maneuver button */}
+        <button onClick={onPlanManeuver} style={{
+          width: '100%', padding: '8px', borderRadius: 6, fontSize: 10,
+          fontFamily: 'var(--font-mono)', letterSpacing: 1, fontWeight: 700,
+          border: '1px solid var(--cyan)', color: 'var(--cyan)',
+          background: 'var(--cyan-dim)', cursor: 'pointer',
+          transition: 'all 0.15s', boxShadow: '0 0 12px rgba(0,212,255,0.15)',
+        }}>
+          ⚡ PLAN MANEUVER
+        </button>
       </div>
 
       {/* Collision risk */}
@@ -61,6 +82,34 @@ export default function DetailPanel({ satellite }: Props) {
               Target: {sat.riskTarget}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Next burn countdown */}
+      {nextBurn && (
+        <div style={{
+          margin: '0 14px 10px', padding: '8px 12px', borderRadius: 6,
+          background: `${TYPE_COLOR[nextBurn.type]}11`, border: `1px solid ${TYPE_COLOR[nextBurn.type]}44`,
+        }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: TYPE_COLOR[nextBurn.type], letterSpacing: 2, marginBottom: 4 }}>
+            NEXT BURN
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+              {nextBurn.type}
+            </span>
+            <Countdown hours={nextBurn.startHour} color={TYPE_COLOR[nextBurn.type]} />
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', marginTop: 3 }}>
+            Δv {nextBurn.deltaV.toFixed(2)} km/s · {nextBurn.durationHours.toFixed(1)}h duration
+          </div>
+        </div>
+      )}
+
+      {/* Last maneuver badge */}
+      {sat.lastManeuver && (
+        <div style={{ margin: '0 14px 6px', padding: '5px 10px', borderRadius: 4, background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.2)' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--green)' }}>✓ Δv applied — {sat.lastManeuver}</span>
         </div>
       )}
 
@@ -99,7 +148,45 @@ export default function DetailPanel({ satellite }: Props) {
         <MonoRow label="Period" value={`${(2 * Math.PI / sat.orbitSpeed / 60).toFixed(0)} min`} />
         <MonoRow label="Phase" value={`${(sat.orbitPhase * 180 / Math.PI).toFixed(1)}°`} />
       </Section>
+
+      {/* Scheduled maneuvers */}
+      {satManeuvers.length > 0 && (
+        <Section title="SCHEDULED BURNS">
+          {satManeuvers.map(m => (
+            <div key={m.id} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              marginBottom: 5, padding: '4px 8px', borderRadius: 4,
+              background: m.executed ? 'rgba(0,255,136,0.06)' : `${TYPE_COLOR[m.type]}0d`,
+              border: `1px solid ${m.executed ? 'rgba(0,255,136,0.2)' : TYPE_COLOR[m.type] + '33'}`,
+            }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: m.executed ? 'var(--green)' : TYPE_COLOR[m.type], textTransform: 'uppercase' }}>
+                {m.executed ? '✓ ' : ''}{m.type}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)' }}>
+                Δv {m.deltaV.toFixed(2)}
+              </span>
+            </div>
+          ))}
+        </Section>
+      )}
     </div>
+  );
+}
+
+function Countdown({ hours, color }: { hours: number; color: string }) {
+  const [secs, setSecs] = useState(Math.round(hours * 3600));
+  useEffect(() => {
+    const t = setInterval(() => setSecs(s => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, [hours]);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const fmt = (n: number) => String(n).padStart(2, '0');
+  return (
+    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, color }}>
+      {fmt(h)}:{fmt(m)}:{fmt(s)}
+    </span>
   );
 }
 

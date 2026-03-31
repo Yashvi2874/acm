@@ -1,5 +1,6 @@
 export type SatelliteStatus = 'nominal' | 'warning' | 'critical';
 export type ManeuverType = 'avoidance' | 'station-keeping' | 'recovery';
+export type BurnDirection = 'prograde' | 'retrograde' | 'radial';
 
 export interface Satellite {
   id: string;
@@ -14,6 +15,7 @@ export interface Satellite {
   orbitSpeed: number; // rad/s
   collisionRisk: boolean;
   riskTarget?: string;
+  lastManeuver?: string; // maneuver id applied
 }
 
 export interface DebrisPoint {
@@ -32,4 +34,13 @@ export interface Maneuver {
   startHour: number; // 0-24
   durationHours: number;
   deltaV: number;
+  executed?: boolean;
+}
+
+export interface ManeuverPlan {
+  satelliteId: string;
+  type: ManeuverType;
+  direction: BurnDirection;
+  deltaV: number; // km/s
+  scheduledHour: number; // 0-24, 0 = now
 }

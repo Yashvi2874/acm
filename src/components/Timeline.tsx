@@ -78,13 +78,15 @@ export default function Timeline({ maneuvers }: Props) {
                       style={{
                         position: 'absolute', top: '20%', height: '60%',
                         left: `${left}%`, width: `${Math.max(width, 0.5)}%`,
-                        background: TYPE_BG[mnv.type], border: `1px solid ${color}`,
+                        background: mnv.executed ? 'rgba(0,255,136,0.15)' : TYPE_BG[mnv.type],
+                        border: `1px solid ${mnv.executed ? '#00ff88' : color}`,
                         borderRadius: 3, cursor: 'pointer', transition: 'opacity 0.15s',
                         display: 'flex', alignItems: 'center', paddingLeft: 4, overflow: 'hidden',
+                        opacity: mnv.executed ? 0.6 : 1,
                       }}
                     >
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color, whiteSpace: 'nowrap' }}>
-                        Δv {mnv.deltaV.toFixed(1)}
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: mnv.executed ? '#00ff88' : color, whiteSpace: 'nowrap' }}>
+                        {mnv.executed ? '✓ ' : ''}Δv {mnv.deltaV.toFixed(1)}
                       </span>
                     </div>
                   );
