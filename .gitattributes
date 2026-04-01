@@ -1,0 +1,13 @@
+* text=auto eol=lf
+*.sh eol=lf
+Dockerfile eol=lf
+*.py eol=lf
+*.go eol=lf
+*.ts eol=lf
+*.tsx eol=lf
+*.json eol=lf
+*.yaml eol=lf
+*.yml eol=lf
+*.csv eol=lf
+*.md eol=lf
+*.toml eol=lf

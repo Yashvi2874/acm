@@ -12,6 +12,7 @@ import (
 )
 
 func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
+	// ── Existing telemetry endpoints ──────────────────────────────────────
 	r.POST("/telemetry/:satellite_id", func(c *gin.Context) {
 		satID := c.Param("satellite_id")
 		var data map[string]interface{}
@@ -52,5 +53,90 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"satellite_id": satID, "records": records})
+	})
+
+	// ── Snapshot (bulk telemetry from simulate/step) ──────────────────────
+	r.POST("/telemetry/snapshot", func(c *gin.Context) {
+		var body map[string]interface{}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		rec := repository.TelemetryRecord{
+			SatelliteID: "_snapshot",
+			Timestamp:   time.Now().UTC(),
+			Data:        body,
+		}
+		p.Enqueue(rec)
+		c.JSON(http.StatusAccepted, gin.H{"status": "queued"})
+	})
+
+	// ── Log endpoints (fire-and-forget from Python) ───────────────────────
+	// POST /log/telemetry  body: {timestamp, objects:[]}
+	r.POST("/log/telemetry", func(c *gin.Context) {
+		var body map[string]interface{}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		rec := repository.TelemetryRecord{
+			SatelliteID: "_bulk",
+			Timestamp:   time.Now().UTC(),
+			Data:        body,
+		}
+		p.Enqueue(rec)
+		c.JSON(http.StatusAccepted, gin.H{"logged": "telemetry"})
+	})
+
+	// POST /log/maneuver  body: {satellite_id, burn_id, deltaV, fuel_remaining, timestamp}
+	r.POST("/log/maneuver", func(c *gin.Context) {
+		var body map[string]interface{}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		satID, _ := body["satellite_id"].(string)
+		if satID == "" {
+			satID = "_maneuver"
+		}
+		rec := repository.TelemetryRecord{
+			SatelliteID: satID,
+			Timestamp:   time.Now().UTC(),
+			Data:        body,
+		}
+		p.Enqueue(rec)
+		c.JSON(http.StatusAccepted, gin.H{"logged": "maneuver"})
+	})
+
+	// POST /log/cdm  body: {sat_id, deb_id, tca, miss_distance}
+	r.POST("/log/cdm", func(c *gin.Context) {
+		var body map[string]interface{}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		rec := repository.TelemetryRecord{
+			SatelliteID: "_cdm",
+			Timestamp:   time.Now().UTC(),
+			Data:        body,
+		}
+		p.Enqueue(rec)
+		c.JSON(http.StatusAccepted, gin.H{"logged": "cdm"})
+	})
+
+	// POST /log/collision  body: {sat_id, deb_id, timestamp}
+	r.POST("/log/collision", func(c *gin.Context) {
+		var body map[string]interface{}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		rec := repository.TelemetryRecord{
+			SatelliteID: "_collision",
+			Timestamp:   time.Now().UTC(),
+			Data:        body,
+		}
+		p.Enqueue(rec)
+		c.JSON(http.StatusAccepted, gin.H{"logged": "collision"})
 	})
 }
