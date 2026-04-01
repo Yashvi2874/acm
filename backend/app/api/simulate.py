@@ -84,6 +84,53 @@ async def _persist_snapshot(
         }))
 
 
+class InitObject(BaseModel):
+    id: str
+    object_type: str          # "satellite" or "debris"
+    position: list[float]     # ECI km [x, y, z]
+    velocity: list[float]     # ECI km/s [vx, vy, vz]
+    fuel_kg: float = 0.5
+    mass_kg: float = 4.0
+    status: str = "nominal"
+
+
+class InitRequest(BaseModel):
+    objects: list[InitObject]
+
+
+@router.post("/init", summary="Seed simulation state with satellites and debris")
+async def init_simulation(req: InitRequest):
+    """
+    Replaces the current simulation state with the provided objects.
+    Call this once on frontend startup to register all satellites and debris.
+    """
+    async with simulation_state.lock:
+        simulation_state.satellites.clear()
+        simulation_state.debris.clear()
+        simulation_state.maneuver_queue.clear()
+        simulation_state.cdm_warnings.clear()
+        simulation_state.trajectory_log.clear()
+        simulation_state.sim_time = datetime.now(timezone.utc)
+
+        for obj in req.objects:
+            if obj.object_type == "satellite":
+                sat = simulation_state.get_or_create_satellite(obj.id)
+                sat.position = list(obj.position)
+                sat.velocity = list(obj.velocity)
+                sat.fuel_kg = obj.fuel_kg
+                sat.initial_fuel_kg = obj.fuel_kg
+                sat.mass_kg = obj.mass_kg
+                sat.status = obj.status  # type: ignore[assignment]
+                sat.nominal_slot = {
+                    "position": list(obj.position),
+                    "velocity": list(obj.velocity),
+                }
+            else:
+                simulation_state.get_or_create_debris(obj.id, obj.position, obj.velocity)
+
+    return {"initialized": len(req.objects), "sim_time": simulation_state.sim_time.isoformat()}
+
+
 class StepRequest(BaseModel):
     dt: float = 10.0   # seconds per step (sub-stepped at ≤30s internally)
     steps: int = 1     # number of ticks to advance
@@ -278,4 +325,123 @@ async def get_sim_state():
             "debris_count":        len(simulation_state.debris),
             "pending_burns":       len(simulation_state.maneuver_queue),
             "active_cdm_warnings": len(simulation_state.active_cdm_warnings),
+        }
+
+
+import math as _math
+
+
+def _orbital_radius(pos: list[float]) -> float:
+    return _math.sqrt(sum(x * x for x in pos))
+
+
+def _inclination(pos: list[float], vel: list[float]) -> float:
+    """Inclination of the current orbit plane in radians."""
+    # h = r × v
+    hx = pos[1] * vel[2] - pos[2] * vel[1]
+    hy = pos[2] * vel[0] - pos[0] * vel[2]
+    hz = pos[0] * vel[1] - pos[1] * vel[0]
+    h = _math.sqrt(hx * hx + hy * hy + hz * hz)
+    if h == 0:
+        return 0.0
+    return _math.acos(max(-1.0, min(1.0, hz / h)))
+
+
+def _orbit_phase(pos: list[float], inc: float) -> float:
+    """Approximate current phase angle in the orbit plane (radians)."""
+    # Project position onto the equatorial plane and compute angle
+    return _math.atan2(pos[1], pos[0])
+
+
+_STATUS_FRONTEND = {
+    "nominal":        "nominal",
+    "maneuver":       "nominal",
+    "safe-hold":      "warning",
+    "comms-loss":     "warning",
+    "decommissioned": "critical",
+}
+
+
+@router.get("/snapshot", summary="Simulation snapshot in frontend-compatible shape")
+async def get_snapshot():
+    """
+    Returns satellites and debris in the exact shape the React frontend expects:
+      satellites: Satellite[]  (id, name, status, fuel 0-100, pos, vel, orbitRadius,
+                                orbitInclination, orbitPhase, orbitSpeed, collisionRisk)
+      debris:     DebrisPoint[] (x, y, z, vx, vy, vz, r, phase, speed, inclination)
+      cdm_warnings: list
+      sim_time: str
+    """
+    async with simulation_state.lock:
+        # Collect active CDM satellite IDs for collision risk flag
+        risk_pairs: dict[str, str] = {}
+        for w in simulation_state.active_cdm_warnings:
+            risk_pairs[w.object_1_id] = w.object_2_id
+            risk_pairs[w.object_2_id] = w.object_1_id
+
+        satellites_out = []
+        for sid, sat in simulation_state.satellites.items():
+            r = _orbital_radius(sat.position)
+            inc = _inclination(sat.position, sat.velocity)
+            phase = _orbit_phase(sat.position, inc)
+            speed_kms = _math.sqrt(sum(v * v for v in sat.velocity))
+            # Angular speed ≈ v_tangential / r  (rad/s)
+            orbit_speed = speed_kms / r if r > 0 else 0.0
+
+            fuel_pct = round(100.0 * sat.fuel_kg / max(sat.initial_fuel_kg, 1e-9))
+            fuel_pct = max(0, min(100, fuel_pct))
+
+            frontend_status = _STATUS_FRONTEND.get(sat.status, "nominal")
+            # Upgrade to warning/critical based on CDM
+            if sid in risk_pairs:
+                frontend_status = "critical"
+
+            satellites_out.append({
+                "id":               sid,
+                "name":             sid,          # use id as name; frontend can override
+                "status":           frontend_status,
+                "fuel":             fuel_pct,
+                "pos":              sat.position,
+                "vel":              sat.velocity,
+                "orbitRadius":      round(r, 3),
+                "orbitInclination": round(inc, 6),
+                "orbitPhase":       round(phase, 6),
+                "orbitSpeed":       round(orbit_speed, 8),
+                "collisionRisk":    sid in risk_pairs,
+                "riskTarget":       risk_pairs.get(sid),
+            })
+
+        debris_out = []
+        for did, deb in simulation_state.debris.items():
+            r = _orbital_radius(deb.position)
+            inc = _inclination(deb.position, deb.velocity)
+            phase = _orbit_phase(deb.position, inc)
+            speed_kms = _math.sqrt(sum(v * v for v in deb.velocity))
+            orbit_speed = speed_kms / r if r > 0 else 0.0
+            debris_out.append({
+                "x": deb.position[0], "y": deb.position[1], "z": deb.position[2],
+                "vx": deb.velocity[0], "vy": deb.velocity[1], "vz": deb.velocity[2],
+                "r": round(r, 3),
+                "phase": round(phase, 6),
+                "speed": round(orbit_speed, 8),
+                "inclination": round(inc, 6),
+            })
+
+        cdm_out = [
+            {
+                "warning_id":       w.warning_id,
+                "object_1_id":      w.object_1_id,
+                "object_2_id":      w.object_2_id,
+                "tca":              w.tca.isoformat(),
+                "miss_distance_km": w.miss_distance_km,
+                "severity":         "CRITICAL" if w.miss_distance_km < 0.1 else "WARNING",
+            }
+            for w in simulation_state.active_cdm_warnings
+        ]
+
+        return {
+            "sim_time":    simulation_state.sim_time.isoformat(),
+            "satellites":  satellites_out,
+            "debris":      debris_out,
+            "cdm_warnings": cdm_out,
         }

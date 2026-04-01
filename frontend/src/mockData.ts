@@ -7,6 +7,7 @@ const rng = (seed: number) => {
 
 export function generateSatellites(): Satellite[] {
   const rand = rng(42);
+  const MU = 398600.4418; // km³/s²
   const statuses: Satellite['status'][] = ['nominal', 'nominal', 'nominal', 'warning', 'critical'];
   return Array.from({ length: 10 }, (_, i) => {
     const r = rand;
@@ -18,13 +19,20 @@ export function generateSatellites(): Satellite[] {
     const x = orbitRadius * Math.cos(phase) * Math.cos(inclination);
     const y = orbitRadius * Math.sin(phase);
     const z = orbitRadius * Math.cos(phase) * Math.sin(inclination);
+
+    // Circular orbit velocity perpendicular to position in orbit plane
+    const v_circ = Math.sqrt(MU / orbitRadius);
+    const vx = v_circ * (-Math.sin(phase) * Math.cos(inclination));
+    const vy = v_circ * Math.cos(phase);
+    const vz = v_circ * (-Math.sin(phase) * Math.sin(inclination));
+
     return {
       id: `SAT-${String(i + 1).padStart(3, '0')}`,
       name: `Orbital-${i + 1}`,
       status,
       fuel: 10 + Math.floor(r() * 90),
       pos: [x, y, z],
-      vel: [r() * 8 - 4, r() * 8 - 4, r() * 8 - 4],
+      vel: [vx, vy, vz],
       orbitRadius,
       orbitInclination: inclination,
       orbitPhase: phase,
@@ -37,6 +45,7 @@ export function generateSatellites(): Satellite[] {
 
 export function generateDebris(): DebrisPoint[] {
   const rand = rng(99);
+  const MU = 398600.4418; // km³/s²
   return Array.from({ length: 50 }, () => {
     const r = rand;
     // Keep debris in same orbital band as satellites (LEO: 6771–7971 km)
@@ -44,11 +53,22 @@ export function generateDebris(): DebrisPoint[] {
     const inc = r() * Math.PI;
     const phase = r() * Math.PI * 2;
     const speed = 0.0003 + r() * 0.0008;
+
+    // ECI position
+    const x = radius * Math.cos(phase) * Math.cos(inc);
+    const y = radius * Math.sin(phase);
+    const z = radius * Math.cos(phase) * Math.sin(inc);
+
+    // Circular orbit velocity (perpendicular to position in orbit plane)
+    const v_circ = Math.sqrt(MU / radius); // km/s
+    // Velocity direction: d(pos)/d(phase) normalized × v_circ
+    const vx = v_circ * (-Math.sin(phase) * Math.cos(inc));
+    const vy = v_circ * Math.cos(phase);
+    const vz = v_circ * (-Math.sin(phase) * Math.sin(inc));
+
     return {
-      x: radius * Math.cos(phase) * Math.cos(inc),
-      y: radius * Math.sin(phase),
-      z: radius * Math.cos(phase) * Math.sin(inc),
-      vx: 0, vy: 0, vz: 0,
+      x, y, z,
+      vx, vy, vz,
       r: radius, phase, speed, inclination: inc,
     };
   });

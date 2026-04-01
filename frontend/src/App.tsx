@@ -7,6 +7,7 @@ import Timeline from './components/Timeline';
 import Tooltip from './components/Tooltip';
 import ManeuverModal from './components/ManeuverModal';
 import { generateSatellites, generateDebris, generateManeuvers } from './mockData';
+import { usePhysicsSimulation } from './usePhysicsSimulation';
 import type { Satellite, DebrisPoint, Maneuver, ManeuverPlan } from './types';
 
 const INITIAL_SATS = generateSatellites();
@@ -14,7 +15,7 @@ const INITIAL_DEBRIS = generateDebris();
 
 export default function App() {
   const [satellites, setSatellites] = useState<Satellite[]>(INITIAL_SATS);
-  const [debris] = useState<DebrisPoint[]>(INITIAL_DEBRIS);
+  const [debris, setDebris] = useState<DebrisPoint[]>(INITIAL_DEBRIS);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -23,11 +24,29 @@ export default function App() {
   const [maneuverModal, setManeuverModal] = useState(false);
   const [maneuverPlan, setManeuverPlan] = useState<ManeuverPlan | null>(null);
   const [flaringId, setFlaringId] = useState<string | null>(null);
+  const [useMock, setUseMock] = useState(false);
   const timeRef = useRef(0);
   const hoveredIdRef = useRef<string | null>(null);
 
-  // Animate satellites — pause on hover
+  // Physics backend integration — seeds state and polls step+snapshot
+  usePhysicsSimulation({
+    initialSatellites: INITIAL_SATS,
+    initialDebris: INITIAL_DEBRIS,
+    enabled: !useMock,
+    onUpdate: (sats, deb) => {
+      setSatellites(sats);
+      setDebris(deb);
+      setTick(t => t + 1);
+    },
+    onFallback: () => {
+      // Backend unreachable — switch to client-side mock animation
+      setUseMock(true);
+    },
+  });
+
+  // Mock animation loop — only active when backend is unreachable
   useEffect(() => {
+    if (!useMock) return;
     let raf: number;
     const animate = (ts: number) => {
       const dt = Math.min((ts - timeRef.current) / 1000, 0.05);
@@ -48,7 +67,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [useMock]);
 
   const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
@@ -95,6 +114,25 @@ export default function App() {
     };
     setManeuvers(prev => [...prev, newMnv]);
 
+    // Send to backend if connected
+    if (!useMock) {
+      // Convert deltaV + direction to RTN vector (prograde = +T, retrograde = -T, radial = +R)
+      const dv = plan.deltaV;
+      const dvRtn =
+        plan.direction === 'prograde'   ? [0, dv, 0] :
+        plan.direction === 'retrograde' ? [0, -dv, 0] :
+                                          [dv, 0, 0];
+      fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/maneuver/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          satellite_id: plan.satelliteId,
+          delta_v_rtn: dvRtn,
+          burn_time: plan.scheduledHour === 0 ? null : undefined,
+        }),
+      }).catch(() => { /* fire-and-forget */ });
+    }
+
     // Trigger flare if immediate
     if (plan.scheduledHour === 0) {
       setFlaringId(plan.satelliteId);
@@ -103,7 +141,7 @@ export default function App() {
 
     setManeuverModal(false);
     setManeuverPlan(null);
-  }, []);
+  }, [useMock]);
 
   const handleOpenModal = useCallback(() => {
     if (!selectedId) return;
