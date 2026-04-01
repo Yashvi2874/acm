@@ -1,0 +1,7 @@
+mongo_uri: "mongodb://mongodb:27017"
+database: "cubesat"
+collection: "telemetry"
+port: "8080"
+buffer_size: 10000
+worker_count: 32
+mode: "actual"
