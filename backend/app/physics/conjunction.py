@@ -1,99 +1,189 @@
-"""Conjunction detection using Octree spatial partitioning + TCA estimation."""
+"""
+Conjunction detection — O(N log N) via scipy KDTree.
+
+Algorithm
+---------
+1. Propagate all debris to T time steps over `horizon_seconds` (coarse grid).
+2. At each time step build a KDTree from debris positions.
+3. Query all satellite positions against the tree with radius = threshold_km.
+4. For each candidate pair, refine TCA with scipy.optimize.minimize_scalar (bounded).
+5. Flag miss_distance < CRITICAL_KM as CRITICAL in the CDM.
+
+Units: km / km/s throughout.
+"""
+from __future__ import annotations
+
 import numpy as np
+from scipy.spatial import KDTree
+from scipy.optimize import minimize_scalar
 from typing import Any
 
-CONJUNCTION_THRESHOLD_M = 5000.0  # 5 km miss distance threshold
+from physics.propagator import propagate_rk4, propagate_ivp
+
+COARSE_KM   = 5.0
+CRITICAL_KM = 0.1
+FINE_KM     = 5.0
+COARSE_STEP_S = 60.0
 
 
-class OctreeNode:
-    def __init__(self, center: np.ndarray, half_size: float):
-        self.center = center
-        self.half_size = half_size
-        self.bodies: list[dict] = []
-        self.children: list["OctreeNode"] = []
+def time_of_closest_approach(
+    sat_state: list[float],
+    deb_state: list[float],
+    t0: float = 0.0,
+    max_seconds: float = 3600.0,
+) -> tuple[float, float]:
+    """
+    Refine TCA by minimising |r_sat(t) - r_deb(t)| with minimize_scalar (bounded).
+    Returns (tca_seconds, miss_distance_km).
+    """
+    s0 = np.array(sat_state, dtype=np.float64)
+    d0 = np.array(deb_state, dtype=np.float64)
 
-    def insert(self, body: dict, max_depth: int = 8, depth: int = 0):
-        pos = np.array(body["position"])
-        if not self._contains(pos):
-            return False
-        if depth >= max_depth or len(self.bodies) < 4:
-            self.bodies.append(body)
-            return True
-        if not self.children:
-            self._subdivide()
-        for child in self.children:
-            if child.insert(body, max_depth, depth + 1):
-                return True
-        self.bodies.append(body)
-        return True
+    if max_seconds <= 0.0:
+        return t0, float(np.linalg.norm(s0[:3] - d0[:3]))
 
-    def _contains(self, pos: np.ndarray) -> bool:
-        return np.all(np.abs(pos - self.center) <= self.half_size)
+    def separation(dt: float) -> float:
+        if dt <= 0.0:
+            return float(np.linalg.norm(s0[:3] - d0[:3]))
+        sub = min(dt, 30.0)
+        s = propagate_rk4(s0.tolist(), dt, sub)[-1]
+        d = propagate_rk4(d0.tolist(), dt, sub)[-1]
+        return float(np.linalg.norm(np.array(s[:3]) - np.array(d[:3])))
 
-    def _subdivide(self):
-        hs = self.half_size / 2
-        offsets = [np.array([dx, dy, dz]) * hs
-                   for dx in [-1, 1] for dy in [-1, 1] for dz in [-1, 1]]
-        self.children = [OctreeNode(self.center + o, hs) for o in offsets]
-
-    def query_near(self, pos: np.ndarray, radius: float) -> list[dict]:
-        if np.any(np.abs(pos - self.center) > self.half_size + radius):
-            return []
-        results = [b for b in self.bodies
-                   if np.linalg.norm(np.array(b["position"]) - pos) <= radius]
-        for child in self.children:
-            results.extend(child.query_near(pos, radius))
-        return results
+    result = minimize_scalar(
+        separation,
+        bounds=(max(t0, 1e-3), t0 + max_seconds),
+        method="bounded",
+        options={"xatol": 1.0},
+    )
+    return float(result.x), float(result.fun)
 
 
-def _estimate_tca(b1: dict, b2: dict) -> tuple[float, float]:
-    """Linear TCA estimate. Returns (tca_seconds, miss_distance_m)."""
-    r1, v1 = np.array(b1["position"]), np.array(b1["velocity"])
-    r2, v2 = np.array(b2["position"]), np.array(b2["velocity"])
-    dr = r1 - r2
-    dv = v1 - v2
-    dv2 = np.dot(dv, dv)
-    if dv2 < 1e-12:
-        return 0.0, float(np.linalg.norm(dr))
-    tca = -np.dot(dr, dv) / dv2
-    miss = np.linalg.norm(dr + tca * dv)
-    return float(tca), float(miss)
+def find_conjunctions(
+    satellites: list[dict[str, Any]],
+    debris: list[dict[str, Any]],
+    horizon_seconds: float = 86400.0,
+    threshold_km: float = COARSE_KM,
+) -> list[dict]:
+    """
+    Full look-ahead conjunction screen.
+
+    Steps:
+      1. Propagate all debris + satellites over horizon via IVP (adaptive, fast).
+      2. At each coarse time step build KDTree from debris positions.
+      3. Query each satellite — O(N log M) per step.
+      4. Refine TCA for candidate pairs only with minimize_scalar.
+      5. Flag < CRITICAL_KM as CRITICAL.
+    """
+    if not satellites or not debris:
+        return []
+
+    n_steps   = max(1, int(horizon_seconds / COARSE_STEP_S))
+    time_grid = np.linspace(0.0, horizon_seconds, n_steps + 1)
+
+    sat_ids = [s["id"] for s in satellites]
+    deb_ids = [d["id"] for d in debris]
+
+    sat_trajs = [
+        propagate_ivp(
+            list(s["position"]) + list(s["velocity"]),
+            horizon_seconds,
+            t_eval_step=COARSE_STEP_S,
+        )
+        for s in satellites
+    ]
+    deb_trajs = [
+        propagate_ivp(
+            list(d["position"]) + list(d["velocity"]),
+            horizon_seconds,
+            t_eval_step=COARSE_STEP_S,
+        )
+        for d in debris
+    ]
+
+    candidate_pairs: set[tuple[str, str]] = set()
+
+    for step_i in range(len(time_grid)):
+        deb_pos = np.array([
+            deb_trajs[j][min(step_i, len(deb_trajs[j]) - 1)][:3]
+            for j in range(len(debris))
+        ])
+        tree = KDTree(deb_pos)
+
+        for si in range(len(satellites)):
+            sat_pos = np.array(
+                sat_trajs[si][min(step_i, len(sat_trajs[si]) - 1)][:3]
+            )
+            for di in tree.query_ball_point(sat_pos, r=threshold_km):
+                candidate_pairs.add((sat_ids[si], deb_ids[di]))
+
+    if not candidate_pairs:
+        return []
+
+    results = []
+    for sat_id, deb_id in candidate_pairs:
+        si = sat_ids.index(sat_id)
+        di = deb_ids.index(deb_id)
+
+        sat_state = list(satellites[si]["position"]) + list(satellites[si]["velocity"])
+        deb_state = list(debris[di]["position"])     + list(debris[di]["velocity"])
+
+        tca_s, miss_km = time_of_closest_approach(
+            sat_state, deb_state,
+            t0=0.0,
+            max_seconds=min(horizon_seconds, 3600.0),
+        )
+
+        if miss_km > FINE_KM:
+            continue
+
+        results.append({
+            "sat1":             sat_id,
+            "sat2":             deb_id,
+            "tca_seconds":      round(tca_s, 1),
+            "miss_distance_km": round(miss_km, 4),
+            "miss_distance_m":  round(miss_km * 1000.0, 1),
+            "severity":         "CRITICAL" if miss_km < CRITICAL_KM else "WARNING",
+        })
+
+    results.sort(key=lambda x: x["miss_distance_km"])
+    return results
 
 
 def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
     """
-    bodies: list of {"id": str, "position": [x,y,z] m, "velocity": [vx,vy,vz] m/s}
-    Returns list of conjunction events.
+    Lightweight per-tick check. KDTree at current positions, TCA over 1 orbit.
+    bodies: [{"id", "position" (km), "velocity" (km/s)}, ...]
     """
-    if not bodies:
+    if len(bodies) < 2:
         return []
 
-    positions = np.array([b["position"] for b in bodies])
-    center = positions.mean(axis=0)
-    half_size = float(np.max(np.abs(positions - center))) + 1.0
+    positions = np.array([list(b["position"]) for b in bodies])
+    ids       = [b["id"] for b in bodies]
 
-    tree = OctreeNode(center, half_size)
-    for body in bodies:
-        tree.insert(body)
+    tree  = KDTree(positions)
+    pairs = tree.query_pairs(r=COARSE_KM)
 
-    conjunctions = []
-    checked = set()
-    for body in bodies:
-        pos = np.array(body["position"])
-        candidates = tree.query_near(pos, CONJUNCTION_THRESHOLD_M * 2)
-        for other in candidates:
-            if other["id"] == body["id"]:
-                continue
-            pair = tuple(sorted([body["id"], other["id"]]))
-            if pair in checked:
-                continue
-            checked.add(pair)
-            tca, miss = _estimate_tca(body, other)
-            if miss <= CONJUNCTION_THRESHOLD_M:
-                conjunctions.append({
-                    "sat1": pair[0],
-                    "sat2": pair[1],
-                    "tca_seconds": tca,
-                    "miss_distance_m": miss,
-                })
-    return conjunctions
+    results = []
+    for i, j in pairs:
+        sat_state = list(bodies[i]["position"]) + list(bodies[i]["velocity"])
+        deb_state = list(bodies[j]["position"]) + list(bodies[j]["velocity"])
+
+        tca_s, miss_km = time_of_closest_approach(
+            sat_state, deb_state, t0=0.0, max_seconds=3600.0
+        )
+
+        if miss_km > FINE_KM:
+            continue
+
+        results.append({
+            "sat1":             ids[i],
+            "sat2":             ids[j],
+            "tca_seconds":      round(tca_s, 1),
+            "miss_distance_km": round(miss_km, 4),
+            "miss_distance_m":  round(miss_km * 1000.0, 1),
+            "severity":         "CRITICAL" if miss_km < CRITICAL_KM else "WARNING",
+        })
+
+    results.sort(key=lambda x: x["miss_distance_km"])
+    return results

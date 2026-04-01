@@ -1,34 +1,37 @@
-"""Line-of-sight checker between satellites and ground stations."""
+"""
+Line-of-sight checker between satellites and ground stations.
+Units: km throughout (matches state_store convention).
+"""
 import numpy as np
 import csv
 import os
 
-RE = 6378137.0  # Earth radius (m)
-ATMO_HEIGHT = 0.0  # additional blocking height (m), set >0 for atmosphere margin
+RE_KM = 6378.137   # Earth radius (km)
 
 
-def _lla_to_ecef(lat_deg: float, lon_deg: float, alt_m: float = 0.0) -> np.ndarray:
+def _lla_to_ecef_km(lat_deg: float, lon_deg: float, alt_km: float = 0.0) -> np.ndarray:
     lat = np.radians(lat_deg)
     lon = np.radians(lon_deg)
-    x = (RE + alt_m) * np.cos(lat) * np.cos(lon)
-    y = (RE + alt_m) * np.cos(lat) * np.sin(lon)
-    z = (RE + alt_m) * np.sin(lat)
-    return np.array([x, y, z])
+    r   = RE_KM + alt_km
+    return np.array([
+        r * np.cos(lat) * np.cos(lon),
+        r * np.cos(lat) * np.sin(lon),
+        r * np.sin(lat),
+    ])
 
 
-def _has_los(sat_pos: np.ndarray, gs_pos: np.ndarray) -> bool:
-    """True if line between sat and ground station doesn't intersect Earth."""
-    d = sat_pos - gs_pos
-    a = np.dot(d, d)
-    b = 2 * np.dot(gs_pos, d)
-    c = np.dot(gs_pos, gs_pos) - (RE + ATMO_HEIGHT) ** 2
-    discriminant = b**2 - 4 * a * c
-    if discriminant < 0:
+def _has_los(sat_pos_km: np.ndarray, gs_pos_km: np.ndarray) -> bool:
+    """True if the line sat→gs does not intersect Earth (radius RE_KM)."""
+    d = sat_pos_km - gs_pos_km
+    a = float(np.dot(d, d))
+    b = float(2.0 * np.dot(gs_pos_km, d))
+    c = float(np.dot(gs_pos_km, gs_pos_km)) - RE_KM ** 2
+    disc = b * b - 4.0 * a * c
+    if disc < 0:
         return True
-    t1 = (-b - np.sqrt(discriminant)) / (2 * a)
-    t2 = (-b + np.sqrt(discriminant)) / (2 * a)
-    # Intersection within segment means blocked
-    return not (0 < t1 < 1 or 0 < t2 < 1)
+    t1 = (-b - np.sqrt(disc)) / (2.0 * a)
+    t2 = (-b + np.sqrt(disc)) / (2.0 * a)
+    return not (0.0 < t1 < 1.0 or 0.0 < t2 < 1.0)
 
 
 def load_ground_stations(csv_path: str | None = None) -> list[dict]:
@@ -36,26 +39,23 @@ def load_ground_stations(csv_path: str | None = None) -> list[dict]:
         csv_path = os.path.join(os.path.dirname(__file__), "../data/ground_stations.csv")
     stations = []
     with open(csv_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
+        for row in csv.DictReader(f):
             stations.append({
-                "id": row["id"],
+                "id":   row["id"],
                 "name": row["name"],
-                "lat": float(row["lat"]),
-                "lon": float(row["lon"]),
-                "alt": float(row.get("alt", 0)),
+                "lat":  float(row["lat"]),
+                "lon":  float(row["lon"]),
+                "alt":  float(row.get("alt", 0)) / 1000.0,  # CSV stores metres → km
             })
     return stations
 
 
-def visible_stations(sat_pos_eci: list[float], stations: list[dict] | None = None) -> list[str]:
-    """Return IDs of ground stations with line-of-sight to the satellite."""
+def visible_stations(sat_pos_km: list[float], stations: list[dict] | None = None) -> list[str]:
+    """Return IDs of ground stations with LOS to the satellite (position in km)."""
     if stations is None:
         stations = load_ground_stations()
-    sat = np.array(sat_pos_eci)
-    visible = []
-    for gs in stations:
-        gs_pos = _lla_to_ecef(gs["lat"], gs["lon"], gs["alt"])
-        if _has_los(sat, gs_pos):
-            visible.append(gs["id"])
-    return visible
+    sat = np.array(sat_pos_km)
+    return [
+        gs["id"] for gs in stations
+        if _has_los(sat, _lla_to_ecef_km(gs["lat"], gs["lon"], gs["alt"]))
+    ]
