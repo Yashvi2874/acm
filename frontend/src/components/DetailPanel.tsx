@@ -41,10 +41,28 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
   const nextBurn = satManeuvers.filter(m => !m.executed).sort((a, b) => a.startHour - b.startHour)[0] ?? null;
 
   return (
-    <div style={{
-      width: 280, background: 'var(--bg-panel)', borderLeft: '1px solid var(--border)',
-      backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflowY: 'auto',
-    }}>
+    <div 
+      className="detail-panel"
+      style={{
+        width: 280, background: 'var(--bg-panel)', borderLeft: '1px solid var(--border)',
+        backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflowY: 'auto',
+      }}
+    >
+      <style>{`
+        .detail-panel::-webkit-scrollbar {
+          width: 6px;
+        }
+        .detail-panel::-webkit-scrollbar-track {
+          background: rgba(0, 0, 0, 0.2);
+        }
+        .detail-panel::-webkit-scrollbar-thumb {
+          background: rgba(0, 212, 255, 0.3);
+          border-radius: 3px;
+        }
+        .detail-panel::-webkit-scrollbar-thumb:hover {
+          background: rgba(0, 212, 255, 0.5);
+        }
+      `}</style>
       {/* Header */}
       <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
