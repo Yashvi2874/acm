@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import type { Satellite } from '../types';
 
-interface Props { satellites: Satellite[]; }
+interface Props { 
+  satellites: Satellite[];
+  showDashboard?: boolean;
+  onToggleDashboard?: () => void;
+}
 
-export default function TopBar({ satellites }: Props) {
+export default function TopBar({ satellites, showDashboard = false, onToggleDashboard }: Props) {
   const [time, setTime] = useState(new Date());
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -66,6 +70,28 @@ export default function TopBar({ satellites }: Props) {
         <span style={{ color: 'var(--text-dim)', marginRight: 6 }}>UTC</span>
         {time.toUTCString().slice(17, 25)}
       </div>
+
+      {/* Dashboard Toggle Button */}
+      {onToggleDashboard && (
+        <button
+          onClick={onToggleDashboard}
+          style={{
+            marginLeft: '16px',
+            padding: '8px 16px',
+            background: showDashboard ? 'var(--cyan)' : 'transparent',
+            border: '1px solid var(--cyan)',
+            borderRadius: '4px',
+            color: showDashboard ? '#000' : 'var(--cyan)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '11px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.2s',
+          }}
+        >
+          {showDashboard ? '🌍 3D VIEW' : '📊 FDO DASHBOARD'}
+        </button>
+      )}
     </div>
   );
 }

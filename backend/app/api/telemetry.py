@@ -179,3 +179,45 @@ async def get_object_telemetry(object_id: str):
                     "v": {"x": d.velocity[0], "y": d.velocity[1], "z": d.velocity[2]}}
     from fastapi import HTTPException
     raise HTTPException(status_code=404, detail=f"{object_id} not found")
+
+
+# ── Admin endpoints ────────────────────────────────────────────────────────────
+
+@router.post("/admin/clear", summary="Clear all satellites and debris from Atlas")
+async def clear_database():
+    """
+    Clear all satellites and debris from MongoDB Atlas via Go adapter.
+    
+    This sends a request to the Go adapter to drop both collections
+    and clear the in-memory simulation state.
+    
+    Response:
+      {"status": "ACK", "message": "Database cleared"}
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{GO_ADAPTER_URL}/admin/clear",
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            
+            # Also clear in-memory state
+            async with simulation_state.lock:
+                simulation_state.satellites.clear()
+                simulation_state.debris.clear()
+                simulation_state.cdm_warnings.clear()
+                
+            return result
+    except httpx.RequestError as e:
+        # If Go adapter is unavailable, just clear in-memory state
+        async with simulation_state.lock:
+            simulation_state.satellites.clear()
+            simulation_state.debris.clear()
+            simulation_state.cdm_warnings.clear()
+        
+        return {
+            "status": "PARTIAL",
+            "message": "Cleared in-memory state only (Go adapter unavailable)",
+        }

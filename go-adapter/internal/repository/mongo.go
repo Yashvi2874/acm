@@ -132,3 +132,13 @@ func (r *MongoRepository) FindAll(ctx context.Context, satelliteID string, limit
 func (r *MongoRepository) Disconnect(ctx context.Context) error {
 	return r.client.Disconnect(ctx)
 }
+
+// GetSatellitesCollection returns the satellites collection for admin operations.
+func (r *MongoRepository) GetSatellitesCollection() *mongo.Collection {
+	return r.satellites
+}
+
+// GetDebrisCollection returns the debris collection for admin operations.
+func (r *MongoRepository) GetDebrisCollection() *mongo.Collection {
+	return r.debris
+}

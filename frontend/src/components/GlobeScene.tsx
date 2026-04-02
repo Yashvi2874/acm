@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import type { Satellite, DebrisPoint, GroundStation, ManeuverPlan } from '../types';
+import { createEarthDayTexture, createEarthNightTexture, createCloudTexture, createSpecularMap } from '../assets/earthTextures';
 
 interface Props {
   satellites: Satellite[];
@@ -144,6 +145,9 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     exhaustOrigin: THREE.Vector3;
     exhaustDir: THREE.Vector3;
     earthGroup: THREE.Group;
+    earthMesh: THREE.Mesh | null;
+    cloudMesh: THREE.Mesh | null;
+    atmosphereMesh: THREE.Mesh | null;
     stationGroup: THREE.Group;
     animId: number;
     isDragging: boolean;
@@ -177,13 +181,87 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     const stationGroup = new THREE.Group();
     earthGroup.add(stationGroup);
 
-    const earth = new THREE.Mesh(
-      new THREE.SphereGeometry(6371 * SCALE, 64, 64),
-      new THREE.MeshPhongMaterial({ color: 0x0a2a4a, emissive: 0x051525, specular: 0x1a4a7a, shininess: 30 })
-    );
+    // ── REALISTIC EARTH SPHERE ────────────────────────────────────────────────
+    // Generate procedural textures
+    const dayTexture = createEarthDayTexture(2048);
+    const nightTexture = createEarthNightTexture(2048);
+    const cloudTex = createCloudTexture(2048);
+    const specularTex = createSpecularMap(2048);
+
+    const dayCanvasTexture = new THREE.CanvasTexture(dayTexture);
+    const nightCanvasTexture = new THREE.CanvasTexture(nightTexture);
+    const cloudCanvasTexture = new THREE.CanvasTexture(cloudTex);
+    const specularCanvasTexture = new THREE.CanvasTexture(specularTex);
+
+    // Earth sphere with day/night cycle
+    const earthGeometry = new THREE.SphereGeometry(6371 * SCALE, 128, 128);
+    const earthMaterial = new THREE.MeshPhongMaterial({
+      map: dayCanvasTexture,
+      specularMap: specularCanvasTexture,
+      specular: new THREE.Color(0x333333),
+      shininess: 15,
+    });
+    const earth = new THREE.Mesh(earthGeometry, earthMaterial);
     earthGroup.add(earth);
+
+    // Night lights layer (additive blending, only visible on dark side)
+    const nightGeometry = new THREE.SphereGeometry((6371 + 0.5) * SCALE, 128, 128);
+    const nightMaterial = new THREE.MeshBasicMaterial({
+      map: nightCanvasTexture,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      side: THREE.FrontSide,
+    });
+    const nightMesh = new THREE.Mesh(nightGeometry, nightMaterial);
+    earthGroup.add(nightMesh);
+
+    // Cloud layer (slightly larger sphere, semi-transparent)
+    const cloudGeometry = new THREE.SphereGeometry((6371 + 15) * SCALE, 128, 128);
+    const cloudMaterial = new THREE.MeshLambertMaterial({
+      map: cloudCanvasTexture,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+    const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
+    earthGroup.add(cloudMesh);
+
+    // Atmospheric glow (custom shader effect using fresnel-like approach)
+    const atmoGeometry = new THREE.SphereGeometry((6371 + 50) * SCALE, 64, 64);
+    const atmoMaterial = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        void main() {
+          float intensity = pow(0.7 - dot(vNormal, vec3(0, 0, 1.0)), 2.0);
+          vec3 atmosphereColor = vec3(0.3, 0.6, 1.0) * intensity;
+          gl_FragColor = vec4(atmosphereColor, intensity * 0.6);
+        }
+      `,
+      blending: THREE.AdditiveBlending,
+      side: THREE.BackSide,
+      transparent: true,
+      depthWrite: false,
+    });
+    const atmosphereMesh = new THREE.Mesh(atmoGeometry, atmoMaterial);
+    earthGroup.add(atmosphereMesh);
+
+    // Wireframe overlay (subtle tech grid)
     earthGroup.add(new THREE.Mesh(new THREE.SphereGeometry(6371 * SCALE + 0.01, 24, 24),
       new THREE.MeshBasicMaterial({ color: 0x0d3a5c, wireframe: true, transparent: true, opacity: 0.15 })));
+    
+    // Outer atmospheric shell (faint blue)
     earthGroup.add(new THREE.Mesh(new THREE.SphereGeometry(6471 * SCALE, 32, 32),
       new THREE.MeshBasicMaterial({ color: 0x0066aa, transparent: true, opacity: 0.08, side: THREE.BackSide })));
 
@@ -345,6 +423,13 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         radius * Math.sin(phi) * Math.cos(theta)
       );
       camera.lookAt(0, 0, 0);
+      
+      // Rotate cloud layer slightly faster than Earth for dynamic effect
+      const s = sceneRef.current;
+      if (s?.cloudMesh) {
+        s.cloudMesh.rotation.y += 0.0001; // Slow cloud drift
+      }
+      
       // Tumble debris
       debrisMeshes.forEach(m => {
         m.rotation.x += m.userData.rotSpeed.x;
@@ -411,7 +496,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       ghostOrbit: ghostOrbitLine, flareRing, flareProgress: 0,
       exhaust, exhaustActive: false,
       exhaustOrigin: new THREE.Vector3(), exhaustDir: new THREE.Vector3(1, 0, 0),
-      earthGroup, stationGroup, animId, isDragging, lastMouse, theta, phi, radius,
+      earthGroup, earthMesh: earth, cloudMesh, atmosphereMesh, stationGroup, animId, isDragging, lastMouse, theta, phi, radius,
     };
 
     const onResize = () => {
@@ -438,7 +523,13 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
   useEffect(() => {
     const s = sceneRef.current;
     if (!s) return;
-    s.earthGroup.rotation.y = gmstRadians(simTime);
+    const gmst = gmstRadians(simTime);
+    // Rotate entire Earth group (surface + night lights + clouds + atmosphere) for ECI→ECEF
+    s.earthGroup.rotation.y = gmst;
+    // Add slight independent cloud drift relative to surface
+    if (s.cloudMesh) {
+      s.cloudMesh.rotation.y = gmst + Date.now() * 0.00001;
+    }
   }, [simTime]);
 
   // Update positions + visuals each tick

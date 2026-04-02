@@ -51,3 +51,12 @@ export interface ManeuverPlan {
   deltaV: number; // km/s
   scheduledHour: number; // 0-24, 0 = now
 }
+
+export interface CdmWarning {
+  warning_id: string;
+  object_1_id: string;
+  object_2_id: string;
+  tca: string;
+  miss_distance_km: number;
+  severity: 'WARNING' | 'CRITICAL';
+}

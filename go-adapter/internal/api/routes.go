@@ -145,6 +145,21 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 		c.JSON(http.StatusAccepted, gin.H{"logged": "collision"})
 	})
 
+	// ── POST /admin/clear — clear database collections ───────────────────
+	r.POST("/admin/clear", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		
+		if err := p.ClearCollections(ctx); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ACK",
+			"message": "Database cleared successfully",
+		})
+	})
+
 	// ── GET /health ───────────────────────────────────────────────────────
 	// (registered in main.go, kept here for reference)
 }

@@ -80,6 +80,20 @@ func (p *TelemetryProcessor) GetAllObjects() ([]repository.SpaceObject, []reposi
 	return p.repo.GetAllObjects(ctx)
 }
 
+// ClearCollections drops both satellites and debris collections
+func (p *TelemetryProcessor) ClearCollections(ctx context.Context) error {
+	satColl := p.repo.GetSatellitesCollection()
+	debColl := p.repo.GetDebrisCollection()
+	
+	if err := satColl.Drop(ctx); err != nil {
+		return err
+	}
+	if err := debColl.Drop(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (p *TelemetryProcessor) worker() {
 	defer p.wg.Done()
 	for {
