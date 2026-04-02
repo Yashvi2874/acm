@@ -1,3 +1,13 @@
+export interface ConjunctionInfo {
+  object_b_id: string;          // the threat object id
+  d_min_km: number;             // minimum separation at TCA (km)
+  current_sep_km: number;       // current separation right now (km)
+  tau_seconds: number;          // seconds until closest approach
+  tau_minutes: number;          // minutes until closest approach
+  is_violation: boolean;        // true if d_min < safety threshold
+  delta_r_tca: [number, number, number]; // relative position vector at TCA
+}
+
 export type SatelliteStatus = 'nominal' | 'warning' | 'critical';
 export type ManeuverType = 'avoidance' | 'station-keeping' | 'recovery';
 export type BurnDirection = 'prograde' | 'retrograde' | 'radial';
