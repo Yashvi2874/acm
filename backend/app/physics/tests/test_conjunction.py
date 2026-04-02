@@ -473,46 +473,46 @@ class TestRunConjunctionAnalysis:
 
     def test_returns_dict_with_required_keys(self):
         objs = self._setup()
-        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 100.0)
+        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 0.100)
         assert {"all_events", "violations", "violation_count", "event_count"} <= result.keys()
 
     def test_violation_count_is_int(self):
         objs = self._setup()
-        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 100.0)
+        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 0.100)
         assert isinstance(result["violation_count"], int)
 
     def test_event_count_is_int(self):
         objs = self._setup()
-        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 100.0)
+        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 0.100)
         assert isinstance(result["event_count"], int)
 
     def test_close_pair_flagged_as_violation(self):
         objs = self._setup()
-        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 100.0)
+        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 0.100)
         assert result["violation_count"] >= 1
 
     def test_violations_subset_of_all_events(self):
         objs = self._setup()
         result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002"),
-                                                  ("SAT-001", "SAT-003")], 5400.0, 100.0)
+                                                  ("SAT-001", "SAT-003")], 5400.0, 0.100)
         assert result["violation_count"] <= result["event_count"]
 
     def test_decayed_object_excluded(self):
         sat1 = make_obj("SAT-001", np.array([6778.0, 0.0, 0.0, 0.0, 7.7102, 0.0]), decayed=True)
         sat2 = make_obj("SAT-002", np.array([6778.0, 0.05, 0.0, 0.0, 7.7102, 0.01]))
-        result = run_conjunction_analysis([sat1, sat2], [("SAT-001", "SAT-002")], 5400.0, 100.0)
+        result = run_conjunction_analysis([sat1, sat2], [("SAT-001", "SAT-002")], 5400.0, 0.100)
         assert result["event_count"] == 0
 
     def test_empty_candidate_pairs(self):
         objs = self._setup()
-        result = run_conjunction_analysis(objs, [], 5400.0, 100.0)
+        result = run_conjunction_analysis(objs, [], 5400.0, 0.100)
         assert result["event_count"] == 0
         assert result["violation_count"] == 0
 
     def test_all_events_json_serializable(self):
         import json
         objs = self._setup()
-        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 100.0)
+        result = run_conjunction_analysis(objs, [("SAT-001", "SAT-002")], 5400.0, 0.100)
         json.dumps(result)
 
     def test_sanity_sat1_sat2_violation(self):
@@ -522,7 +522,7 @@ class TestRunConjunctionAnalysis:
             objs,
             [("SAT-001", "SAT-002"), ("SAT-001", "SAT-003")],
             t_window=5400.0,
-            safety_threshold_km=100.0,
+            safety_threshold_km=0.100,
         )
         violation_ids = {(v["object_a_id"], v["object_b_id"]) for v in result["violations"]}
         assert ("SAT-001", "SAT-002") in violation_ids

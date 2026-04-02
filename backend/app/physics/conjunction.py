@@ -549,7 +549,7 @@ if __name__ == "__main__":
         objects=[sat1, sat2, sat3],
         candidate_pairs=candidate_pairs,
         t_window=5400.0,
-        safety_threshold_km=100.0,
+        safety_threshold_km=0.100,
     )
 
     print(f"Total events:    {result['event_count']}")
