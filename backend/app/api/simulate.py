@@ -279,7 +279,7 @@ async def simulate_step(req: StepRequest):
                 "object_2_id":      w.object_2_id,
                 "tca":              w.tca.isoformat(),
                 "miss_distance_km": w.miss_distance_km,
-                "severity":         "CRITICAL" if w.miss_distance_km < 0.1 else "WARNING",
+                "severity":         "CRITICAL" if w.miss_distance_km < 0.100 else "WARNING",
             }
             for w in simulation_state.active_cdm_warnings
         ]
@@ -488,7 +488,7 @@ async def get_snapshot():
                 "object_2_id":      w.object_2_id,
                 "tca":              w.tca.isoformat(),
                 "miss_distance_km": w.miss_distance_km,
-                "severity":         "CRITICAL" if w.miss_distance_km < 0.1 else "WARNING",
+                "severity":         "CRITICAL" if w.miss_distance_km < 0.100 else "WARNING",
             }
             for w in simulation_state.active_cdm_warnings
         ]

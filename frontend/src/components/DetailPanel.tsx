@@ -321,7 +321,7 @@ function ProximitySection({ conjunctions }: { conjunctions: ConjunctionInfo[] })
             {/* Min separation at TCA */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', minWidth: 28 }}>TCA</span>
-              <DistanceBar value={c.d_min_km} max={500} />
+              <DistanceBar value={c.d_min_km} max={0.100} />
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: isViolation ? 'var(--red)' : 'var(--amber)', minWidth: 70, textAlign: 'right' }}>
                 {c.d_min_km < 1 ? `${(c.d_min_km * 1000).toFixed(0)} m` : `${c.d_min_km.toFixed(1)} km`}
               </span>
