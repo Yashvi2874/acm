@@ -553,16 +553,22 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const group = s.satGroups.get(sat.id);
       const hitMesh = s.satHitMeshes.get(sat.id);
       if (!group || !hitMesh) return;
+      
+      // Use actual ECI position from backend (physics-accurate)
       const pos = toScene(...sat.pos);
       group.position.copy(pos);
       hitMesh.position.copy(pos);
+      
+      // Orient satellite to point at Earth center (nadir pointing)
       group.lookAt(0, 0, 0);
+      
       const isSelected = sat.id === selectedId;
       const isHovered = sat.id === hoveredId;
       const isFlaring = sat.id === flaringId;
       const scale = isFlaring ? 1.6 : isSelected ? 1.4 : isHovered ? 1.2 : 1;
       group.scale.setScalar(scale);
       hitMesh.scale.setScalar(scale);
+      
       // Update body material
       group.children.forEach(child => {
         if (child instanceof THREE.Mesh && (child as THREE.Mesh).userData.isBody) {
@@ -572,8 +578,21 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
           mat.emissiveIntensity = isFlaring ? 1.2 : isSelected ? 0.7 : isHovered ? 0.5 : 0.25;
         }
       });
+      
+      // Update orbit line visibility and opacity
       const line = s.orbitLines.get(sat.id);
-      if (line) (line.material as THREE.LineBasicMaterial).opacity = isSelected ? 0.85 : isHovered ? 0.65 : 0.35;
+      if (line) {
+        (line.material as THREE.LineBasicMaterial).opacity = isSelected ? 0.85 : isHovered ? 0.65 : 0.35;
+        // Make orbit line follow actual satellite position by rotating it
+        // The orbit plane is determined by inclination and current position
+        const orbitNormal = new THREE.Vector3(
+          Math.sin(sat.orbitInclination) * Math.cos(sat.orbitPhase),
+          -Math.sin(sat.orbitInclination) * Math.sin(sat.orbitPhase),
+          Math.cos(sat.orbitInclination)
+        );
+        line.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), orbitNormal);
+      }
+      
       if (isFlaring) {
         s.exhaustOrigin.copy(pos);
         s.exhaustDir.copy(pos).normalize();

@@ -222,18 +222,98 @@ export default function App() {
   }, [selectedId, satellites]);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--bg-primary)' }}>
+    <div 
+      className="app-container"
+      style={{ 
+        width: '100vw', 
+        height: '100vh', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        overflow: 'hidden', 
+        background: 'var(--bg-primary)' 
+      }}
+    >
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.3)} }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
         @keyframes flare { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(4)} }
+        
+        /* Responsive layout for all screen sizes */
+        .app-container {
+          --panel-width: min(320px, 25vw);
+          --min-panel-width: 260px;
+        }
+        
+        @media (max-width: 768px) {
+          .app-container {
+            --panel-width: min(280px, 35vw);
+            --min-panel-width: 220px;
+          }
+        }
+        
+        @media (max-width: 480px) {
+          .app-container {
+            --panel-width: min(240px, 45vw);
+            --min-panel-width: 200px;
+          }
+        }
+        
+        .left-panel {
+          width: var(--min-panel-width);
+          min-width: var(--min-panel-width);
+          max-width: var(--panel-width);
+          flex: 0 0 auto;
+        }
+        
+        .right-panel {
+          width: var(--min-panel-width);
+          min-width: var(--min-panel-width);
+          max-width: var(--panel-width);
+          flex: 0 0 auto;
+        }
+        
+        .globe-container {
+          flex: 1;
+          position: relative;
+          overflow: hidden;
+          min-width: 0;
+        }
+        
+        /* Hide panels on very small screens, show on demand */
+        @media (max-width: 640px) {
+          .left-panel {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            z-index: 10;
+            transform: translateX(-100%);
+            transition: transform 0.3s ease;
+          }
+          .left-panel.visible {
+            transform: translateX(0);
+          }
+          
+          .right-panel {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            z-index: 10;
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+          }
+          .right-panel.visible {
+            transform: translateX(0);
+          }
+        }
       `}</style>
 
       <TopBar satellites={satellites} />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Left panel */}
-        <div style={{ width: 260, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
+        <div className="left-panel" style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
           <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
           {/* Timeline button at bottom of list */}
           <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
@@ -249,7 +329,7 @@ export default function App() {
           </div>
         </div>
         {/* Center globe */}
-        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div className="globe-container">
           {/* Scanline overlay */}
           <div style={{
             position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1,
@@ -306,11 +386,13 @@ export default function App() {
           )}
         </div>
 
-        <DetailPanel
-          satellite={selectedSat}
-          maneuvers={maneuvers}
-          onPlanManeuver={handleOpenModal}
-        />
+        <div className="right-panel" style={{ display: 'flex', flexDirection: 'column' }}>
+          <DetailPanel
+            satellite={selectedSat}
+            maneuvers={maneuvers}
+            onPlanManeuver={handleOpenModal}
+          />
+        </div>
       </div>
 
       <Tooltip satellite={tooltip.sat} x={tooltip.x} y={tooltip.y} />
