@@ -16,6 +16,7 @@ Units: km / km/s throughout.
 from __future__ import annotations
 
 import numpy as np
+from dataclasses import dataclass
 from scipy.spatial import KDTree
 from scipy.optimize import minimize_scalar
 from typing import Any
@@ -28,6 +29,88 @@ COARSE_KM              = 5.0    # Initial screening radius for KDTree query
 CRITICAL_KM            = COLLISION_THRESHOLD_KM  # Alias for clarity
 FINE_KM                = 5.0    # Refinement threshold
 COARSE_STEP_S          = 60.0   # Time step for coarse grid
+
+
+# ── 2C — Conjunction event dataclass ─────────────────────────────────────────
+
+@dataclass
+class ConjunctionEvent:
+    """Single output unit of the conjunction pipeline — one instance per flagged pair."""
+    object_a_id:        str           # id of first object
+    object_b_id:        str           # id of second object
+    tau:                float         # seconds from now until closest approach
+    d_min:              float         # minimum separation distance in km
+    delta_r_tca:        np.ndarray    # relative position vector at TCA, shape (3,)
+    is_violation:       bool          # True if d_min < safety_threshold_km
+    current_separation: float         # current distance between the two objects in km
+
+
+# ── Step 1A — Relative State ──────────────────────────────────────────────────
+
+def compute_relative_state(
+    state_A: np.ndarray,
+    state_B: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """
+    Compute the relative position, velocity, and scalar separation between two objects.
+
+    Args:
+        state_A: (6,) array [x, y, z, vx, vy, vz] for object A  (km, km/s)
+        state_B: (6,) array [x, y, z, vx, vy, vz] for object B  (km, km/s)
+
+    Returns:
+        delta_r : (3,) ndarray — relative position vector A−B  (km)
+        delta_v : (3,) ndarray — relative velocity vector A−B  (km/s)
+        d       : float        — current scalar separation      (km)
+    """
+    r_A = state_A[:3]
+    r_B = state_B[:3]
+    v_A = state_A[3:]
+    v_B = state_B[3:]
+
+    delta_r = r_A - r_B
+    delta_v = v_A - v_B
+    d       = float(np.linalg.norm(delta_r))
+
+    return delta_r, delta_v, d
+
+
+# ── Step 1B/1C — Time of Closest Approach (linear) ───────────────────────────
+
+def compute_tca(
+    state_A: np.ndarray,
+    state_B: np.ndarray,
+) -> tuple[float, float, np.ndarray]:
+    """
+    Compute the linear Time of Closest Approach (TCA) between two objects.
+
+    Uses the exact closed-form solution:
+        tau = -dot(delta_r, delta_v) / dot(delta_v, delta_v)
+
+    This minimises |delta_r + tau * delta_v|² with respect to tau.
+
+    Args:
+        state_A: (6,) array [x, y, z, vx, vy, vz] for object A  (km, km/s)
+        state_B: (6,) array [x, y, z, vx, vy, vz] for object B  (km, km/s)
+
+    Returns:
+        tau         : float        — seconds until closest approach (negative = already passed)
+        d_min       : float        — minimum separation distance at TCA  (km)
+        delta_r_tca : (3,) ndarray — relative position vector at TCA     (km)
+    """
+    delta_r, delta_v, d = compute_relative_state(state_A, state_B)
+
+    dv_sq = float(np.dot(delta_v, delta_v))
+
+    # 1C — Safety guard: parallel / formation-flight trajectories
+    if dv_sq < 1e-12:
+        return 0.0, d, delta_r.copy()
+
+    tau         = -float(np.dot(delta_r, delta_v)) / dv_sq
+    delta_r_tca = delta_r + tau * delta_v
+    d_min       = float(np.linalg.norm(delta_r_tca))
+
+    return tau, d_min, delta_r_tca
 
 
 def time_of_closest_approach(
@@ -234,3 +317,243 @@ def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
 
     results.sort(key=lambda x: x["miss_distance_km"])
     return results
+
+
+# ── Step 2 additions ──────────────────────────────────────────────────────────
+
+def is_tca_in_window(tau: float, t_window: float) -> bool:
+    """
+    2A — Time window validator.
+
+    Returns True only if the closest approach is in the future and within
+    the lookahead window.
+
+    Args:
+        tau:      seconds until closest approach (negative = already passed)
+        t_window: lookahead window in seconds (e.g. 5400.0 for 90 minutes)
+
+    Returns:
+        False if tau < 0  (closest approach already happened)
+        False if tau > t_window  (beyond prediction window)
+        True  otherwise
+    """
+    if tau < 0:
+        return False
+    if tau > t_window:
+        return False
+    return True
+
+
+def is_violation(d_min: float, safety_threshold_km: float) -> bool:
+    """
+    2B — Distance threshold checker.
+
+    Args:
+        d_min:                minimum separation distance in km (from compute_tca)
+        safety_threshold_km:  hard safety distance in km (e.g. 0.100 for 100 m)
+
+    Returns:
+        True if the pair will violate the safety constraint (d_min < threshold)
+    """
+    return d_min < safety_threshold_km
+
+
+def analyze_pair(
+    obj_A,
+    obj_B,
+    t_window: float,
+    safety_threshold_km: float,
+) -> "ConjunctionEvent | None":
+    """
+    2D — Per-pair conjunction analysis.
+
+    Computes TCA and relative state for a single pair of SimObjects.
+    Returns None if the closest approach falls outside the time window.
+
+    Args:
+        obj_A:                SimObject — first object
+        obj_B:                SimObject — second object
+        t_window:             lookahead window in seconds
+        safety_threshold_km:  hard safety distance in km
+
+    Returns:
+        ConjunctionEvent if TCA is within the window, else None.
+    """
+    tau, d_min, delta_r_tca = compute_tca(obj_A.state, obj_B.state)
+
+    if not is_tca_in_window(tau, t_window):
+        return None
+
+    _, _, d_current = compute_relative_state(obj_A.state, obj_B.state)
+
+    return ConjunctionEvent(
+        object_a_id=        obj_A.id,
+        object_b_id=        obj_B.id,
+        tau=                tau,
+        d_min=              d_min,
+        delta_r_tca=        delta_r_tca,
+        is_violation=       is_violation(d_min, safety_threshold_km),
+        current_separation= d_current,
+    )
+
+
+# ── Step 3 — Full Conjunction Pipeline ───────────────────────────────────────
+
+def screen_conjunctions(
+    objects: list,
+    candidate_pairs: list[tuple[str, str]],
+    t_window: float = 5400.0,
+    safety_threshold_km: float = 0.100,
+) -> list[ConjunctionEvent]:
+    """
+    3A — Main conjunction screening function.
+
+    Consumes KD-tree candidate pairs and runs analyze_pair on each.
+    Does NOT re-implement the KD-tree — that is the caller's responsibility.
+
+    Args:
+        objects:              list of SimObject instances (all active objects)
+        candidate_pairs:      list of (id_A, id_B) tuples from the KD-tree filter
+        t_window:             lookahead window in seconds (default: 5400 = one orbit)
+        safety_threshold_km:  hard safety distance in km  (default: 0.100 = 100 m)
+
+    Returns:
+        List of ConjunctionEvent — all pairs whose TCA falls within the window,
+        both violations and non-violations. Caller filters as needed.
+    """
+    obj_map = {obj.id: obj for obj in objects}
+    results: list[ConjunctionEvent] = []
+
+    for id_A, id_B in candidate_pairs:
+        obj_A = obj_map.get(id_A)
+        obj_B = obj_map.get(id_B)
+
+        # Skip missing or decayed objects
+        if obj_A is None or obj_B is None:
+            continue
+        if getattr(obj_A, "decayed", False) or getattr(obj_B, "decayed", False):
+            continue
+
+        event = analyze_pair(obj_A, obj_B, t_window, safety_threshold_km)
+        if event is not None:
+            results.append(event)
+
+    return results
+
+
+def get_violations(conjunction_events: list[ConjunctionEvent]) -> list[ConjunctionEvent]:
+    """
+    3B — Violation filter helper.
+
+    Args:
+        conjunction_events: list of ConjunctionEvent instances
+
+    Returns:
+        Only events where is_violation == True, sorted by d_min ascending
+        (most dangerous conjunction first).
+    """
+    violations = [e for e in conjunction_events if e.is_violation]
+    violations.sort(key=lambda e: e.d_min)
+    return violations
+
+
+def serialize_conjunctions(conjunction_events: list[ConjunctionEvent]) -> list[dict]:
+    """
+    3C — Serialization for frontend.
+
+    Converts ConjunctionEvent instances to JSON-serializable dicts in the
+    exact structure the React/Vite frontend consumes.
+
+    Args:
+        conjunction_events: list of ConjunctionEvent instances
+
+    Returns:
+        List of dicts with keys:
+            object_a_id, object_b_id, tau_seconds, tau_minutes,
+            d_min_km, current_sep_km, is_violation, delta_r_tca
+    """
+    return [
+        {
+            "object_a_id":    event.object_a_id,
+            "object_b_id":    event.object_b_id,
+            "tau_seconds":    round(event.tau, 2),
+            "tau_minutes":    round(event.tau / 60, 2),
+            "d_min_km":       round(event.d_min, 4),
+            "current_sep_km": round(event.current_separation, 4),
+            "is_violation":   event.is_violation,
+            "delta_r_tca":    event.delta_r_tca.tolist(),
+        }
+        for event in conjunction_events
+    ]
+
+
+def run_conjunction_analysis(
+    objects: list,
+    candidate_pairs: list[tuple[str, str]],
+    t_window: float = 5400.0,
+    safety_threshold_km: float = 0.100,
+) -> dict:
+    """
+    3D — Single public entry point for the API layer.
+
+    Call this after every simulation timestep, passing the KD-tree candidate
+    pairs and the current list of SimObjects.
+
+    Args:
+        objects:              list of SimObject instances
+        candidate_pairs:      list of (id_A, id_B) tuples from the KD-tree
+        t_window:             lookahead window in seconds
+        safety_threshold_km:  hard safety distance in km
+
+    Returns:
+        {
+            "all_events":      list of serialized ConjunctionEvent dicts,
+            "violations":      list of serialized violation dicts (d_min ascending),
+            "violation_count": int,
+            "event_count":     int,
+        }
+    """
+    active = [o for o in objects if not getattr(o, "decayed", False)]
+
+    all_events = screen_conjunctions(active, candidate_pairs, t_window, safety_threshold_km)
+    violations = get_violations(all_events)
+
+    return {
+        "all_events":      serialize_conjunctions(all_events),
+        "violations":      serialize_conjunctions(violations),
+        "violation_count": len(violations),
+        "event_count":     len(all_events),
+    }
+
+
+# ── 3F — Sanity test ─────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import sys, os
+    sys.path.insert(0, os.path.dirname(__file__))
+    from state import SimObject  # type: ignore
+
+    # Two objects on near-collision course — separation closing fast
+    sat1 = SimObject(id="SAT-001", object_type="satellite",
+                     state=np.array([6778.0, 0.0, 0.0, 0.0, 7.7102, 0.0]))
+    sat2 = SimObject(id="SAT-002", object_type="satellite",
+                     state=np.array([6778.0, 0.05, 0.0, 0.0, 7.7102, 0.01]))
+
+    # Two objects safely separated
+    sat3 = SimObject(id="SAT-003", object_type="satellite",
+                     state=np.array([7200.0, 500.0, 0.0, 0.0, 7.2, 0.0]))
+
+    candidate_pairs = [("SAT-001", "SAT-002"), ("SAT-001", "SAT-003")]
+
+    result = run_conjunction_analysis(
+        objects=[sat1, sat2, sat3],
+        candidate_pairs=candidate_pairs,
+        t_window=5400.0,
+        safety_threshold_km=100.0,
+    )
+
+    print(f"Total events:    {result['event_count']}")
+    print(f"Violations:      {result['violation_count']}")
+    for v in result["violations"]:
+        print(f"  {v['object_a_id']} x {v['object_b_id']} → "
+              f"d_min={v['d_min_km']} km in {v['tau_minutes']} min")
