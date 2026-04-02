@@ -204,7 +204,7 @@ async function stepAndSnapshot(): Promise<SimSnapshot | null> {
     const stepRes = await fetch(`${API}/api/simulate/step`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dt: SIM_DT, steps: 1 }),
+      body: JSON.stringify({ step_seconds: SIM_DT }),
     });
     if (!stepRes.ok) return null;
 

@@ -1,12 +1,12 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.22 AS builder
 WORKDIR /app
 COPY go.mod ./
 RUN go mod download || true
 COPY . .
 RUN go mod tidy && go build -o go-adapter .
 
-FROM alpine:3.19
-RUN apk add --no-cache wget
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates wget && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/go-adapter .
 COPY --from=builder /app/admin_config.yaml .

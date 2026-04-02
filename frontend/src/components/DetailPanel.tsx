@@ -44,8 +44,8 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
     <div 
       className="detail-panel"
       style={{
-        width: 280, background: 'var(--bg-panel)', borderLeft: '1px solid var(--border)',
-        backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', flexShrink: 0, overflowY: 'auto',
+        width: '100%', height: '100%', background: 'var(--bg-panel)',
+        backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', overflowY: 'auto',
       }}
     >
       <style>{`
@@ -63,6 +63,8 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
           background: rgba(0, 212, 255, 0.5);
         }
       `}</style>
+      {/* Content wrapper with padding */}
+      <div style={{ minWidth: '100%', paddingBottom: '20px' }}>
       {/* Header */}
       <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -192,6 +194,7 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
           ))}
         </Section>
       )}
+      </div>
     </div>
   );
 }

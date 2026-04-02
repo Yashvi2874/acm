@@ -59,7 +59,7 @@ def _orbit_state(alt_km: float, inc_deg: float, raan_deg: float, ta_deg: float) 
     return pos, vel
 
 
-def generate_satellites(n: int = 10) -> list[dict]:
+def generate_satellites(n: int = 50) -> list[dict]:
     """Generate n satellites in a Walker-like constellation at 550 km."""
     sats = []
     alt  = 550.0
@@ -121,7 +121,7 @@ def main():
 
     print(f"Seeding Atlas via {args.api} ...")
 
-    satellites = generate_satellites(10)
+    satellites = generate_satellites(50)
     debris     = generate_debris(50)
     all_objects = satellites + debris
 
@@ -133,7 +133,7 @@ def main():
 
     if result.get("status") == "ACK":
         print(f"\n  Saved to Atlas:")
-        print(f"    satellites collection : 10 documents")
+        print(f"    satellites collection : 50 documents")
         print(f"    debris collection     : 50 documents")
         print(f"    telemetry collection  : {result['processed_count']} log entries")
         print(f"\n  Active CDM warnings: {result['active_cdm_warnings']}")

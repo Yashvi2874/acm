@@ -25,11 +25,10 @@ export default function SatelliteList({ satellites, selectedId, onSelect }: Prop
 
   return (
     <div style={{
-      width: 260, display: 'flex', flexDirection: 'column',
-      background: 'var(--bg-panel)', borderRight: '1px solid var(--border)',
-      backdropFilter: 'blur(12px)', flexShrink: 0,
+      width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+      background: 'var(--bg-panel)', backdropFilter: 'blur(12px)',
     }}>
-      {/* Header */}
+      {/* Header - fixed at top */}
       <div style={{ padding: '12px 14px 8px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--cyan)', letterSpacing: 2, marginBottom: 8 }}>
           CONSTELLATION — {satellites.length} SATS
@@ -59,11 +58,12 @@ export default function SatelliteList({ satellites, selectedId, onSelect }: Prop
         </div>
       </div>
 
-      {/* List with custom scrollbar */}
+      {/* Scrollable list area - fills remaining space */}
       <div 
         className="satellite-list"
         style={{ 
           flex: 1, 
+          minHeight: 0, // Critical for scrolling to work!
           overflowY: 'auto',
           overflowX: 'hidden',
         }}

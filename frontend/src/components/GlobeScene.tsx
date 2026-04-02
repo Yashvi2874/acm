@@ -190,18 +190,29 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 64, 64), earthMat);
     earthGroup.add(earth);
 
-    // Load NASA Blue Marble textures from public CDN
+    // Load NASA Blue Marble textures from CDN with CORS handling
     const BASE = 'https://unpkg.com/three@0.160.0/examples/textures/planets';
-    loader.load(`${BASE}/earth_atmos_2048.jpg`, tex => {
+    
+    // Helper to load textures with error handling
+    const loadTexture = (url: string, onLoad: (tex: THREE.Texture) => void) => {
+      loader.load(
+        url,
+        onLoad,
+        undefined, // onProgress
+        (err) => console.warn(`Texture load failed: ${url}`, err) // onError - silent fallback
+      );
+    };
+    
+    loadTexture(`${BASE}/earth_atmos_2048.jpg`, tex => {
       earthMat.map = tex;
       earthMat.color.set(0xffffff);
       earthMat.needsUpdate = true;
     });
-    loader.load(`${BASE}/earth_specular_2048.jpg`, tex => {
+    loadTexture(`${BASE}/earth_specular_2048.jpg`, tex => {
       earthMat.specularMap = tex;
       earthMat.needsUpdate = true;
     });
-    loader.load(`${BASE}/earth_normal_2048.jpg`, tex => {
+    loadTexture(`${BASE}/earth_normal_2048.jpg`, tex => {
       earthMat.normalMap = tex;
       earthMat.normalScale.set(0.6, 0.6);
       earthMat.needsUpdate = true;
@@ -213,7 +224,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     });
     const clouds = new THREE.Mesh(new THREE.SphereGeometry(R * 1.005, 64, 64), cloudMat);
     earthGroup.add(clouds);
-    loader.load(`${BASE}/earth_clouds_1024.png`, tex => {
+    loadTexture(`${BASE}/earth_clouds_1024.png`, tex => {
       cloudMat.map = tex;
       cloudMat.alphaMap = tex;
       cloudMat.needsUpdate = true;
@@ -321,7 +332,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     let seed = 77;
     const rand = () => { seed = (seed * 1664525 + 1013904223) & 0xffffffff; return (seed >>> 0) / 0xffffffff; };
 
-    debris.slice(0, 50).forEach((d, i) => {
+    debris.forEach((d, i) => {
       // Mix of low-poly shapes for irregular look
       const shapeType = i % 3;
       let geo: THREE.BufferGeometry;
@@ -338,11 +349,19 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         shininess: 40,
         flatShading: true,
       }));
+      
+      const p = new THREE.Vector3(d.x, d.y, d.z);
+      const v = new THREE.Vector3(d.vx, d.vy, d.vz);
+      const r_mag = p.length();
+      const n = new THREE.Vector3().crossVectors(p, v).normalize();
+      const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
+      
+      mesh.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
+      
       mesh.position.copy(toScene(d.x, d.y, d.z));
       mesh.rotation.set(rand() * Math.PI * 2, rand() * Math.PI * 2, rand() * Math.PI * 2);
       mesh.userData.rotSpeed = { x: (rand() - 0.5) * 0.02, y: (rand() - 0.5) * 0.02, z: (rand() - 0.5) * 0.02 };
-      // Store orbital params for animation
-      mesh.userData.orbit = { r: d.r, phase: d.phase, speed: d.speed, inc: d.inclination };
+      
       scene.add(mesh);
       debrisMeshes.push(mesh);
     });
@@ -356,6 +375,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const group = buildSatelliteGroup(STATUS_COLORS[sat.status]);
       group.position.copy(toScene(...sat.pos));
       group.userData.satId = sat.id;
+      group.userData.orbit = { r: sat.orbitRadius, phase: sat.orbitPhase, speed: sat.orbitSpeed, inc: sat.orbitInclination };
       scene.add(group);
       satGroups.set(sat.id, group);
 
@@ -446,14 +466,14 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         m.rotation.x += m.userData.rotSpeed.x;
         m.rotation.y += m.userData.rotSpeed.y;
         m.rotation.z += m.userData.rotSpeed.z;
-        // Advance orbit phase at same rate as satellites (speed * dt * 40)
-        const o = m.userData.orbit;
-        o.phase += o.speed * 0.016 * 40;
-        m.position.copy(toScene(
-          o.r * Math.cos(o.phase) * Math.cos(o.inc),
-          o.r * Math.sin(o.phase),
-          o.r * Math.cos(o.phase) * Math.sin(o.inc)
-        ));
+        const o = m.userData.satOrbit;
+        if (o) {
+          o.theta += o.speed;
+          const pos = new THREE.Vector3()
+            .addScaledVector(o.p0, Math.cos(o.theta))
+            .addScaledVector(o.u, Math.sin(o.theta));
+          m.position.copy(toScene(pos.x, pos.y, pos.z));
+        }
       });
 
       // Exhaust particles
@@ -506,6 +526,23 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         flareRing.scale.setScalar(1 + (1 - sc.flareProgress) * 7);
       }
 
+      // Advance satellites
+      sc?.satGroups.forEach((group: THREE.Group) => {
+        const o = group.userData.satOrbit;
+        if (o) {
+          o.theta += o.speed;
+          const pos = new THREE.Vector3()
+            .addScaledVector(o.p0, Math.cos(o.theta))
+            .addScaledVector(o.u, Math.sin(o.theta));
+          const newPos = toScene(pos.x, pos.y, pos.z);
+          group.position.copy(newPos);
+          group.lookAt(0, 0, 0);
+          
+          const hitMesh = sc?.satHitMeshes.get(group.userData.satId);
+          if (hitMesh) hitMesh.position.copy(newPos);
+        }
+      });
+
       renderer.render(scene, camera);
     };
     animate();
@@ -542,7 +579,10 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
   useEffect(() => {
     const s = sceneRef.current;
     if (!s) return;
-    s.earthGroup.rotation.y = gmstRadians(simTime);
+    // Very subtle Earth rotation - just for visual reference (10% of actual GMST)
+    // This keeps orbits mostly static while showing minimal Earth movement
+    const subtleRotation = gmstRadians(simTime) * 0.1;
+    s.earthGroup.rotation.y = subtleRotation;
   }, [simTime]);
 
   // Update positions + visuals each tick
@@ -554,13 +594,16 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const hitMesh = s.satHitMeshes.get(sat.id);
       if (!group || !hitMesh) return;
       
-      // Use actual ECI position from backend (physics-accurate)
-      const pos = toScene(...sat.pos);
-      group.position.copy(pos);
-      hitMesh.position.copy(pos);
+      // Resync orbital parameters from backend fetching every 60s
+      const p = new THREE.Vector3(...sat.pos);
+      const v = new THREE.Vector3(...sat.vel);
+      const r_mag = p.length();
+      const n = new THREE.Vector3().crossVectors(p, v).normalize();
+      const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
       
-      // Orient satellite to point at Earth center (nadir pointing)
-      group.lookAt(0, 0, 0);
+      group.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
+      
+      const pos = toScene(...sat.pos);
       
       const isSelected = sat.id === selectedId;
       const isHovered = sat.id === hoveredId;
@@ -579,18 +622,18 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         }
       });
       
-      // Update orbit line visibility and opacity
+      // Update orbit line visibility and geometry
       const line = s.orbitLines.get(sat.id);
       if (line) {
         (line.material as THREE.LineBasicMaterial).opacity = isSelected ? 0.85 : isHovered ? 0.65 : 0.35;
-        // Make orbit line follow actual satellite position by rotating it
-        // The orbit plane is determined by inclination and current position
-        const orbitNormal = new THREE.Vector3(
-          Math.sin(sat.orbitInclination) * Math.cos(sat.orbitPhase),
-          -Math.sin(sat.orbitInclination) * Math.sin(sat.orbitPhase),
-          Math.cos(sat.orbitInclination)
-        );
-        line.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), orbitNormal);
+        const pts: THREE.Vector3[] = [];
+        for (let a = 0; a <= 360; a += 3) {
+          const rad = (a * Math.PI) / 180;
+          const tr = new THREE.Vector3().addScaledVector(p, Math.cos(rad)).addScaledVector(u, Math.sin(rad));
+          pts.push(toScene(tr.x, tr.y, tr.z));
+        }
+        line.geometry.setFromPoints(pts);
+        line.quaternion.identity();
       }
       
       if (isFlaring) {
@@ -611,8 +654,22 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     let newRadius = sat.orbitRadius;
     if (maneuverPlan.direction === 'prograde') newRadius += maneuverPlan.deltaV * 200;
     else if (maneuverPlan.direction === 'retrograde') newRadius -= maneuverPlan.deltaV * 200;
-    s.ghostOrbit.geometry.setFromPoints(buildOrbitPoints(newRadius, sat.orbitInclination));
-    s.ghostOrbit.computeLineDistances();
+
+    const p = new THREE.Vector3(...sat.pos);
+    const v = new THREE.Vector3(...sat.vel);
+    const n = new THREE.Vector3().crossVectors(p, v).normalize();
+    const u = new THREE.Vector3().crossVectors(n, p).normalize();
+    const p_unit = p.clone().normalize();
+    
+    const pts: THREE.Vector3[] = [];
+    for (let a = 0; a <= 360; a += 3) {
+      const rad = (a * Math.PI) / 180;
+      const tr = new THREE.Vector3().addScaledVector(p_unit, newRadius * Math.cos(rad)).addScaledVector(u, newRadius * Math.sin(rad));
+      pts.push(toScene(tr.x, tr.y, tr.z));
+    }
+    s.ghostOrbit.geometry.setFromPoints(pts);
+    s.ghostOrbit.quaternion.identity();
+    
     mat.color.setHex(maneuverPlan.type === 'avoidance' ? 0xff3b3b : maneuverPlan.type === 'recovery' ? 0x00ff88 : 0xffffff);
     mat.opacity = 0.7;
   }, [maneuverPlan, satellites]);

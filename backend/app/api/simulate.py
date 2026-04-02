@@ -132,16 +132,19 @@ async def init_simulation(req: InitRequest):
 
 
 class StepRequest(BaseModel):
-    dt: float = 10.0   # seconds per step (sub-stepped at ≤30s internally)
-    steps: int = 1     # number of ticks to advance
+    step_seconds: float
 
 
 @router.post("/step", summary="Advance simulation by N ticks of dt seconds")
 async def simulate_step(req: StepRequest):
-    if req.dt <= 0 or req.steps < 1:
-        raise HTTPException(status_code=422, detail="dt must be > 0 and steps >= 1")
-    if req.steps > 1000:
-        raise HTTPException(status_code=422, detail="steps capped at 1000 per call")
+    if req.step_seconds <= 0:
+        raise HTTPException(status_code=422, detail="step_seconds must be > 0")
+
+    dt_step = min(req.step_seconds, 10.0)
+    steps = int(req.step_seconds / dt_step)
+    if steps == 0:
+        steps = 1
+        dt_step = req.step_seconds
 
     maneuvers_executed: list[dict] = []
     cooldown_rejected:  list[dict] = []
@@ -153,7 +156,7 @@ async def simulate_step(req: StepRequest):
                 detail="No objects in state. POST /api/telemetry first.",
             )
 
-        for _step in range(req.steps):
+        for _step in range(steps):
             t_now = simulation_state.sim_time
 
             # ── 1. Execute due burns ──────────────────────────────────────
@@ -196,19 +199,19 @@ async def simulate_step(req: StepRequest):
 
             # ── 2. Propagate satellites ───────────────────────────────────
             for sat in simulation_state.satellites.values():
-                result = propagate_rk4(sat.eci, req.dt, req.dt)
+                result = propagate_rk4(sat.eci, dt_step, dt_step)
                 sat.position = result[-1][:3]
                 sat.velocity = result[-1][3:]
 
                 # ── 3. Propagate nominal ghost (no maneuvers ever) ────────
-                nom = propagate_rk4(sat.nominal_eci, req.dt, req.dt)
+                nom = propagate_rk4(sat.nominal_eci, dt_step, dt_step)
                 sat.nominal_slot["position"] = nom[-1][:3]
                 sat.nominal_slot["velocity"] = nom[-1][3:]
 
                 # ── 4. Station-keeping check ──────────────────────────────
-                sat.total_seconds += req.dt
+                sat.total_seconds += dt_step
                 if sat.drift_km <= STATION_KEEP_KM:
-                    sat.uptime_seconds += req.dt
+                    sat.uptime_seconds += dt_step
                     if sat.status not in ("maneuver", "safe-hold", "comms-loss"):
                         sat.status = "nominal"
                 else:
@@ -223,13 +226,13 @@ async def simulate_step(req: StepRequest):
 
             # ── 5. Propagate debris ───────────────────────────────────────
             for deb in simulation_state.debris.values():
-                result = propagate_rk4(deb.eci, req.dt, req.dt)
+                result = propagate_rk4(deb.eci, dt_step, dt_step)
                 deb.position = result[-1][:3]
                 deb.velocity = result[-1][3:]
                 simulation_state.log_state(deb.debris_id, t_now, deb.eci)
 
             # ── Advance clock ─────────────────────────────────────────────
-            simulation_state.sim_time += timedelta(seconds=req.dt)
+            simulation_state.sim_time += timedelta(seconds=dt_step)
 
         # ── 6. EOL check (after all steps) ───────────────────────────────
         eol_flags: list[dict] = []
@@ -292,15 +295,10 @@ async def simulate_step(req: StepRequest):
     ))
 
     return {
-        "sim_time":             simulation_state.sim_time.isoformat(),
-        "steps_advanced":       req.steps,
-        "dt_seconds":           req.dt,
-        "maneuvers_executed":   maneuvers_executed,
-        "cooldown_rejected":    cooldown_rejected,
-        "collisions_detected":  len([c for c in cdm_snapshot if c["severity"] == "CRITICAL"]),
-        "satellites":           sat_snapshot,
-        "cdm_warnings":         cdm_snapshot,
-        "eol_flags":            eol_flags,
+        "status": "STEP_COMPLETE",
+        "new_timestamp": simulation_state.sim_time.isoformat(),
+        "collisions_detected": len([c for c in cdm_snapshot if c["severity"] == "CRITICAL"]),
+        "maneuvers_executed": len(maneuvers_executed)
     }
 
 

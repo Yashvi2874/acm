@@ -1,4 +1,4 @@
-mongo_uri: "mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM"
+mongo_uri: "mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM&tls=true&tlsInsecure=true"
 database: "acm"
 collection: "telemetry"
 port: "8080"

@@ -5,12 +5,11 @@ import GlobeScene from './components/GlobeScene';
 import DetailPanel from './components/DetailPanel';
 import ManeuverTimeline from './components/ManeuverTimeline';import Tooltip from './components/Tooltip';
 import ManeuverModal from './components/ManeuverModal';
-import { generateSatellites, generateDebris, generateManeuvers } from './mockData';
 import { usePhysicsSimulation } from './usePhysicsSimulation';
 import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan } from './types';
 
-const INITIAL_SATS = generateSatellites();
-const INITIAL_DEBRIS = generateDebris();
+const INITIAL_SATS: Satellite[] = [];
+const INITIAL_DEBRIS: DebrisPoint[] = [];
 const GROUND_STATIONS: GroundStation[] = [
   { id: 'GS-001', name: 'ISTRAC_Bengaluru', lat: 13.0333, lon: 77.5167 },
   { id: 'GS-002', name: 'Svalbard_Sat_Station', lat: 78.2297, lon: 15.4077 },
@@ -28,21 +27,22 @@ export default function App() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [tooltip, setTooltip] = useState<{ sat: Satellite | null; x: number; y: number }>({ sat: null, x: 0, y: 0 });
-  const [maneuvers, setManeuvers] = useState<Maneuver[]>(() => generateManeuvers(INITIAL_SATS));
+  const [maneuvers, setManeuvers] = useState<Maneuver[]>([]);
   const [maneuverModal, setManeuverModal] = useState(false);
   const [maneuverPlan, setManeuverPlan] = useState<ManeuverPlan | null>(null);
   const [flaringId, setFlaringId] = useState<string | null>(null);
-  const [useMock, setUseMock] = useState(false);
+  const [useMock] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const autoManeuveredRef = useRef<Set<string>>(new Set()); // prevent re-triggering
-  const timeRef = useRef(0);
+  
   const hoveredIdRef = useRef<string | null>(null);
+  const refreshIntervalRef = useRef<number | null>(null);
 
   // Physics backend integration — seeds state and polls step+snapshot
   usePhysicsSimulation({
-    initialSatellites: INITIAL_SATS,
-    initialDebris: INITIAL_DEBRIS,
-    enabled: !useMock,
+    initialSatellites: [],
+    initialDebris: [],
+    enabled: true, // Always connect to backend
     onUpdate: (sats, deb, _cdm, nextSimTime) => {
       setSatellites(sats);
       setDebris(deb);
@@ -50,36 +50,87 @@ export default function App() {
       setTick(t => t + 1);
     },
     onFallback: () => {
-      // Backend unreachable — switch to client-side mock animation
-      setUseMock(true);
+      console.warn("Backend unavailable. Waiting for connection...");
     },
   });
 
-  // Mock animation loop — only active when backend is unreachable
+  // Auto-refresh data from database every 60 seconds
   useEffect(() => {
-    if (!useMock) return;
-    let raf: number;
-    const animate = (ts: number) => {
-      const dt = Math.min((ts - timeRef.current) / 1000, 0.05);
-      timeRef.current = ts;
-      if (!hoveredIdRef.current) {
-        setSatellites(prev => prev.map(sat => {
-          const newPhase = sat.orbitPhase + sat.orbitSpeed * dt * 40;
-          const r = sat.orbitRadius;
-          const inc = sat.orbitInclination;
-          return {
-            ...sat, orbitPhase: newPhase,
-            pos: [r * Math.cos(newPhase) * Math.cos(inc), r * Math.sin(newPhase), r * Math.cos(newPhase) * Math.sin(inc)],
-          };
-        }));
-        setSimTime(new Date().toISOString());
-        setTick(t => t + 1);
+    const refreshData = async () => {
+      try {
+        const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/telemetry/objects`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.satellites && data.debris) {
+            console.log(`Auto-refreshing data: ${data.satellites.length} satellites, ${data.debris.length} debris`);
+            
+            // Transform backend format to frontend Satellite interface
+            const transformedSats = data.satellites.map((sat: any) => {
+              // Extract position and velocity vectors
+              const pos = sat.r ? [sat.r.x, sat.r.y, sat.r.z] as [number, number, number] : [0, 0, 0];
+              const vel = sat.v ? [sat.v.x, sat.v.y, sat.v.z] as [number, number, number] : [0, 0, 0];
+              
+              // Calculate orbital elements from position/velocity
+              const r = Math.sqrt(pos[0]**2 + pos[1]**2 + pos[2]**2);
+              const v = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
+              const inc = Math.acos(pos[2] / r) || 0;
+              const phase = Math.atan2(pos[1], pos[0]) || 0;
+              const speed = v / r || 0.001;
+              
+              return {
+                id: sat.id || `SAT-${Math.random().toString(36).substr(2, 9)}`,
+                name: sat.name || `Satellite-${sat.id?.substr(-4) || 'UNK'}`,
+                status: (sat.status === 'critical' || sat.status === 'warning') ? sat.status : 'nominal',
+                fuel: sat.fuel_kg !== undefined ? sat.fuel_kg : 100,
+                pos: pos,
+                vel: vel,
+                orbitRadius: r,
+                orbitInclination: inc,
+                orbitPhase: phase,
+                orbitSpeed: speed,
+                collisionRisk: false,
+                autoManeuvering: false,
+              };
+            });
+            
+            // Transform debris format
+            const transformedDebris = data.debris.map((deb: any) => {
+              const pos = deb.r ? [deb.r.x, deb.r.y, deb.r.z] as [number, number, number] : [0, 0, 0];
+              const vel = deb.v ? [deb.v.x, deb.v.y, deb.v.z] as [number, number, number] : [0, 0, 0];
+              
+              return {
+                id: deb.id || `DEB-${Math.random().toString(36).substr(2, 9)}`,
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                vx: vel[0],
+                vy: vel[1],
+                vz: vel[2],
+              };
+            });
+            
+            setSatellites(transformedSats);
+            setDebris(transformedDebris);
+            setSimTime(new Date().toISOString());
+            setTick(t => t + 1);
+          }
+        }
+      } catch (error) {
+        console.warn('Auto-refresh failed:', error);
       }
-      raf = requestAnimationFrame(animate);
     };
-    raf = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(raf);
-  }, [useMock]);
+
+    // Initial refresh after 5 seconds
+    const initialTimeout = setTimeout(refreshData, 5000);
+    
+    // Then refresh every 60 seconds
+    refreshIntervalRef.current = setInterval(refreshData, 60000);
+
+    return () => {
+      if (initialTimeout) clearTimeout(initialTimeout);
+      if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
+    };
+  }, []);
 
   const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
@@ -312,23 +363,50 @@ export default function App() {
       <TopBar satellites={satellites} />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        {/* Left panel */}
-        <div className="left-panel" style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
-          <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
-          {/* Timeline button at bottom of list */}
-          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+        {/* Left panel - responsive with proper scrolling */}
+        <div className="left-panel" style={{ 
+          display: 'flex', 
+          flexDirection: 'column', 
+          borderRight: '1px solid var(--border)', 
+          background: 'var(--bg-panel)', 
+          backdropFilter: 'blur(12px)',
+          height: '100%',
+          minWidth: '260px',
+          maxWidth: '320px',
+        }}>
+          {/* Satellite list takes all available space */}
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
+          </div>
+          
+          {/* Timeline button at bottom of left panel - always visible */}
+          <div style={{ padding: '12px', borderTop: '1px solid var(--border)', background: 'rgba(0,0,0,0.3)', flexShrink: 0 }}>
             <button onClick={() => setShowTimeline(true)} style={{
-              width: '100%', padding: '9px', borderRadius: 6, fontSize: 10,
+              width: '100%', padding: '10px', borderRadius: 6, fontSize: 10,
               fontFamily: 'var(--font-mono)', letterSpacing: 1, fontWeight: 700,
-              border: '1px solid var(--border)', color: 'var(--cyan)',
+              border: '1px solid var(--cyan)', color: 'var(--cyan)',
               background: 'var(--cyan-dim)', cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            }}>
+              transition: 'all 0.2s',
+              boxShadow: '0 0 10px rgba(0,212,255,0.2)',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'var(--cyan)';
+              e.currentTarget.style.color = '#000';
+              e.currentTarget.style.boxShadow = '0 0 15px rgba(0,212,255,0.4)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'var(--cyan-dim)';
+              e.currentTarget.style.color = 'var(--cyan)';
+              e.currentTarget.style.boxShadow = '0 0 10px rgba(0,212,255,0.2)';
+            }}
+            >
               📅 MANEUVER TIMELINE
             </button>
           </div>
         </div>
-        {/* Center globe */}
+        
+        {/* Center globe - full flexible space */}
         <div className="globe-container">
           {/* Scanline overlay */}
           <div style={{
@@ -342,6 +420,7 @@ export default function App() {
           <CornerDeco pos="br" />
 
           <GlobeScene
+            key={`globe-${satellites.length}-${debris.length}`}
             satellites={satellites}
             debris={debris}
             groundStations={GROUND_STATIONS}
@@ -386,7 +465,17 @@ export default function App() {
           )}
         </div>
 
-        <div className="right-panel" style={{ display: 'flex', flexDirection: 'column' }}>
+        <div className="right-panel" style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          borderLeft: '1px solid var(--border)',
+          background: 'var(--bg-panel)',
+          backdropFilter: 'blur(12px)',
+          height: '100%',
+          minWidth: '280px',
+          maxWidth: '340px',
+          overflowX: 'hidden',
+        }}>
           <DetailPanel
             satellite={selectedSat}
             maneuvers={maneuvers}

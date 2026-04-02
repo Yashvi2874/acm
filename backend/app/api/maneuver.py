@@ -11,69 +11,86 @@ from pydantic import BaseModel, field_validator
 
 from state_store import simulation_state, ScheduledBurn
 from physics.maneuver import fuel_consumed
+from physics.ground_station import visible_stations
 
 router = APIRouter()
 
 MAX_DV_KMS = 0.5    # km/s — 500 m/s sanity cap
 
 
+class DeltaVVector(BaseModel):
+    x: float
+    y: float
+    z: float
+
+class ManeuverSequenceItem(BaseModel):
+    burn_id: str
+    burnTime: datetime
+    deltaV_vector: DeltaVVector
+
 class ManeuverRequest(BaseModel):
-    satellite_id: str
-    delta_v_rtn: list[float]        # [dv_r, dv_t, dv_n] km/s in RTN frame
-    burn_time: datetime | None = None  # UTC; None = execute on next step
+    satelliteId: str
+    maneuver_sequence: list[ManeuverSequenceItem]
 
-    @field_validator("delta_v_rtn")
-    @classmethod
-    def validate_dv(cls, v: list[float]) -> list[float]:
-        if len(v) != 3:
-            raise ValueError("delta_v_rtn must have exactly 3 components [R, T, N]")
-        return v
-
-
-@router.post("/schedule", summary="Schedule a maneuver for a satellite")
+@router.post("/schedule", summary="Schedule a maneuver for a satellite", status_code=202)
 async def schedule_maneuver(req: ManeuverRequest):
-    dv_mag_kms = math.sqrt(sum(x**2 for x in req.delta_v_rtn))
-
-    if dv_mag_kms > MAX_DV_KMS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"delta-v {dv_mag_kms:.4f} km/s exceeds limit {MAX_DV_KMS} km/s",
-        )
-
     async with simulation_state.lock:
-        sat = simulation_state.get_or_create_satellite(req.satellite_id)
+        sat = simulation_state.get_or_create_satellite(req.satelliteId)
+        
+        # LOS Validation
+        visible = visible_stations(sat.position)
+        has_los = len(visible) > 0
+        
+        projected_mass = sat.mass_kg
 
-        # Fuel check — fuel_consumed works in km/s
-        required_fuel = fuel_consumed(sat.mass_kg, dv_mag_kms)
-        if required_fuel > sat.fuel_kg:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Insufficient fuel: need {required_fuel:.6f} kg, "
-                    f"have {sat.fuel_kg:.6f} kg"
-                ),
+        if not has_los:
+            return {
+                "status": "REJECTED_LOS",
+                "validation": {
+                    "ground_station_los": False,
+                    "sufficient_fuel": True,
+                    "projected_mass_remaining_kg": round(projected_mass, 2)
+                }
+            }
+
+        for item in req.maneuver_sequence:
+            dv = item.deltaV_vector
+            dv_mag_kms = math.sqrt(dv.x**2 + dv.y**2 + dv.z**2)
+            
+            if dv_mag_kms > MAX_DV_KMS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"delta-v {dv_mag_kms:.4f} km/s exceeds limit {MAX_DV_KMS} km/s",
+                )
+
+            required_fuel = fuel_consumed(sat.mass_kg, dv_mag_kms)
+            if required_fuel > sat.fuel_kg:
+                return {
+                    "status": "REJECTED_FUEL",
+                    "validation": {
+                        "ground_station_los": True,
+                        "sufficient_fuel": False,
+                        "projected_mass_remaining_kg": round(projected_mass, 2)
+                    }
+                }
+            
+            projected_mass -= required_fuel
+            
+            burn = ScheduledBurn(
+                burn_id=item.burn_id,
+                satellite_id=req.satelliteId,
+                delta_v_rtn=[dv.x, dv.y, dv.z],
+                burn_time=item.burnTime,
             )
-
-        burn_time = req.burn_time or simulation_state.sim_time
-        # Never schedule in the past
-        if burn_time < simulation_state.sim_time:
-            burn_time = simulation_state.sim_time
-
-        burn = ScheduledBurn(
-            satellite_id=req.satellite_id,
-            delta_v_rtn=req.delta_v_rtn,
-            burn_time=burn_time,
-        )
-        simulation_state.enqueue_burn(burn)
+            simulation_state.enqueue_burn(burn)
 
     return {
-        "burn_id": burn.burn_id,
-        "satellite_id": req.satellite_id,
-        "delta_v_rtn_kms": req.delta_v_rtn,
-        "delta_v_magnitude_kms": round(dv_mag_kms, 6),
-        "fuel_required_kg": round(required_fuel, 6),
-        "burn_time": burn_time.isoformat(),
-        "queued": True,
+        "status": "SCHEDULED",
+        "validation": {
+            "ground_station_los": True,
+            "sufficient_fuel": True,
+            "projected_mass_remaining_kg": round(projected_mass, 2)
+        }
     }
 
 
