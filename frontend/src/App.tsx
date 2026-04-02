@@ -8,14 +8,23 @@ import Tooltip from './components/Tooltip';
 import ManeuverModal from './components/ManeuverModal';
 import { generateSatellites, generateDebris, generateManeuvers } from './mockData';
 import { usePhysicsSimulation } from './usePhysicsSimulation';
-import type { Satellite, DebrisPoint, Maneuver, ManeuverPlan } from './types';
+import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan } from './types';
 
 const INITIAL_SATS = generateSatellites();
 const INITIAL_DEBRIS = generateDebris();
+const GROUND_STATIONS: GroundStation[] = [
+  { id: 'GS-001', name: 'ISTRAC_Bengaluru', lat: 13.0333, lon: 77.5167 },
+  { id: 'GS-002', name: 'Svalbard_Sat_Station', lat: 78.2297, lon: 15.4077 },
+  { id: 'GS-003', name: 'Goldstone_Tracking', lat: 35.4266, lon: -116.89 },
+  { id: 'GS-004', name: 'Punta_Arenas', lat: -53.15, lon: -70.9167 },
+  { id: 'GS-005', name: 'IIT_Delhi_Ground_Node', lat: 28.545, lon: 77.1926 },
+  { id: 'GS-006', name: 'McMurdo_Station', lat: -77.8463, lon: 166.6682 },
+];
 
 export default function App() {
   const [satellites, setSatellites] = useState<Satellite[]>(INITIAL_SATS);
   const [debris, setDebris] = useState<DebrisPoint[]>(INITIAL_DEBRIS);
+  const [simTime, setSimTime] = useState<string>(new Date().toISOString());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -33,9 +42,10 @@ export default function App() {
     initialSatellites: INITIAL_SATS,
     initialDebris: INITIAL_DEBRIS,
     enabled: !useMock,
-    onUpdate: (sats, deb) => {
+    onUpdate: (sats, deb, _cdm, nextSimTime) => {
       setSatellites(sats);
       setDebris(deb);
+      setSimTime(nextSimTime);
       setTick(t => t + 1);
     },
     onFallback: () => {
@@ -61,6 +71,7 @@ export default function App() {
             pos: [r * Math.cos(newPhase) * Math.cos(inc), r * Math.sin(newPhase), r * Math.cos(newPhase) * Math.sin(inc)],
           };
         }));
+        setSimTime(new Date().toISOString());
         setTick(t => t + 1);
       }
       raf = requestAnimationFrame(animate);
@@ -180,6 +191,8 @@ export default function App() {
           <GlobeScene
             satellites={satellites}
             debris={debris}
+            groundStations={GROUND_STATIONS}
+            simTime={simTime}
             selectedId={selectedId}
             hoveredId={hoveredId}
             maneuverPlan={maneuverModal ? maneuverPlan : null}

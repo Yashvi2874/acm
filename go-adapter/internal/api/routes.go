@@ -11,6 +11,33 @@ import (
 )
 
 func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
+	getObjects := func(c *gin.Context) {
+		sats, debs, err := p.GetAllObjects()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if sats == nil {
+			sats = []repository.SpaceObject{}
+		}
+		if debs == nil {
+			debs = []repository.SpaceObject{}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"satellites": sats,
+			"debris":     debs,
+		})
+	}
+
+	getLatestTelemetry := func(c *gin.Context) {
+		satID := c.Param("satellite_id")
+		rec, err := p.GetLatest(satID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no telemetry found"})
+			return
+		}
+		c.JSON(http.StatusOK, rec)
+	}
 
 	// ── POST /log/telemetry — bulk ingest from Python (spec format) ───────
 	// Body: {"timestamp":"...","objects":[{"id":"...","type":"...","r":{...},"v":{...}}]}
@@ -18,13 +45,13 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 		var body struct {
 			Timestamp string `json:"timestamp"`
 			Objects   []struct {
-				ID     string `json:"id"`
-				Type   string `json:"type"`
+				ID     string                    `json:"id"`
+				Type   string                    `json:"type"`
 				R      struct{ X, Y, Z float64 } `json:"r"`
 				V      struct{ X, Y, Z float64 } `json:"v"`
-				Status string  `json:"status"`
-				FuelKg float64 `json:"fuel_kg"`
-				MassKg float64 `json:"mass_kg"`
+				Status string                    `json:"status"`
+				FuelKg float64                   `json:"fuel_kg"`
+				MassKg float64                   `json:"mass_kg"`
 			} `json:"objects"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
@@ -62,34 +89,12 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 	})
 
 	// ── GET /objects — return all satellites + debris from Atlas ──────────
-	r.GET("/objects", func(c *gin.Context) {
-		sats, debs, err := p.GetAllObjects()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if sats == nil {
-			sats = []repository.SpaceObject{}
-		}
-		if debs == nil {
-			debs = []repository.SpaceObject{}
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"satellites": sats,
-			"debris":     debs,
-		})
-	})
+	r.GET("/objects", getObjects)
+	r.GET("/api/telemetry/objects", getObjects)
 
 	// ── GET /telemetry/:id — latest raw telemetry log ─────────────────────
-	r.GET("/telemetry/:satellite_id", func(c *gin.Context) {
-		satID := c.Param("satellite_id")
-		rec, err := p.GetLatest(satID)
-		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "no telemetry found"})
-			return
-		}
-		c.JSON(http.StatusOK, rec)
-	})
+	r.GET("/telemetry/:satellite_id", getLatestTelemetry)
+	r.GET("/api/telemetry/:satellite_id", getLatestTelemetry)
 
 	// ── POST /log/maneuver ────────────────────────────────────────────────
 	r.POST("/log/maneuver", func(c *gin.Context) {

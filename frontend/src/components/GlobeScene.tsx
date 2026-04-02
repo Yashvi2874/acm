@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import type { Satellite, DebrisPoint, ManeuverPlan } from '../types';
+import type { Satellite, DebrisPoint, GroundStation, ManeuverPlan } from '../types';
 
 interface Props {
   satellites: Satellite[];
   debris: DebrisPoint[];
+  groundStations: GroundStation[];
+  simTime: string;
   selectedId: string | null;
   hoveredId: string | null;
   maneuverPlan: ManeuverPlan | null;
@@ -21,8 +23,27 @@ const STATUS_COLORS: Record<string, number> = {
 };
 
 const SCALE = 1 / 500;
+const EARTH_RADIUS_KM = 6371;
+const J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
+const EARTH_OMEGA = 7.2921150e-5;
 const toScene = (x: number, y: number, z: number) =>
   new THREE.Vector3(x * SCALE, y * SCALE, z * SCALE);
+
+function latLonToEcefScene(lat: number, lon: number, radiusKm = EARTH_RADIUS_KM + 25) {
+  const phi = THREE.MathUtils.degToRad(90 - lat);
+  const theta = THREE.MathUtils.degToRad(lon + 180);
+  const x = -(radiusKm * Math.sin(phi) * Math.cos(theta));
+  const z = radiusKm * Math.sin(phi) * Math.sin(theta);
+  const y = radiusKm * Math.cos(phi);
+  return toScene(x, y, z);
+}
+
+function gmstRadians(simTime: string) {
+  const ms = new Date(simTime).getTime();
+  if (Number.isNaN(ms)) return 0;
+  const theta = EARTH_OMEGA * ((ms - J2000_MS) / 1000);
+  return ((theta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+}
 
 function buildOrbitPoints(radius: number, inclination: number): THREE.Vector3[] {
   const pts: THREE.Vector3[] = [];
@@ -105,7 +126,7 @@ function createExhaustSystem(scene: THREE.Scene) {
   return { points, geo, particles };
 }
 
-export default function GlobeScene({ satellites, debris, selectedId, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
+export default function GlobeScene({ satellites, debris, groundStations, simTime, selectedId, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -122,7 +143,8 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
     exhaustActive: boolean;
     exhaustOrigin: THREE.Vector3;
     exhaustDir: THREE.Vector3;
-    earth: THREE.Mesh;
+    earthGroup: THREE.Group;
+    stationGroup: THREE.Group;
     animId: number;
     isDragging: boolean;
     lastMouse: { x: number; y: number };
@@ -149,16 +171,49 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
     scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.15, transparent: true, opacity: 0.7 })));
 
-    // Earth
+    // Earth-centered geographic frame: Earth mesh + station markers rotate together.
+    const earthGroup = new THREE.Group();
+    scene.add(earthGroup);
+    const stationGroup = new THREE.Group();
+    earthGroup.add(stationGroup);
+
     const earth = new THREE.Mesh(
       new THREE.SphereGeometry(6371 * SCALE, 64, 64),
       new THREE.MeshPhongMaterial({ color: 0x0a2a4a, emissive: 0x051525, specular: 0x1a4a7a, shininess: 30 })
     );
-    scene.add(earth);
-    scene.add(new THREE.Mesh(new THREE.SphereGeometry(6371 * SCALE + 0.01, 24, 24),
+    earthGroup.add(earth);
+    earthGroup.add(new THREE.Mesh(new THREE.SphereGeometry(6371 * SCALE + 0.01, 24, 24),
       new THREE.MeshBasicMaterial({ color: 0x0d3a5c, wireframe: true, transparent: true, opacity: 0.15 })));
-    scene.add(new THREE.Mesh(new THREE.SphereGeometry(6471 * SCALE, 32, 32),
+    earthGroup.add(new THREE.Mesh(new THREE.SphereGeometry(6471 * SCALE, 32, 32),
       new THREE.MeshBasicMaterial({ color: 0x0066aa, transparent: true, opacity: 0.08, side: THREE.BackSide })));
+
+    const gridMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16 });
+    for (let lat = -75; lat <= 75; lat += 15) {
+      const points: THREE.Vector3[] = [];
+      for (let lon = -180; lon <= 180; lon += 3) {
+        points.push(latLonToEcefScene(lat, lon, EARTH_RADIUS_KM + 4));
+      }
+      earthGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), gridMaterial));
+    }
+    for (let lon = -180; lon < 180; lon += 15) {
+      const points: THREE.Vector3[] = [];
+      for (let lat = -90; lat <= 90; lat += 3) {
+        points.push(latLonToEcefScene(lat, lon, EARTH_RADIUS_KM + 4));
+      }
+      earthGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), gridMaterial));
+    }
+
+    groundStations.forEach((station) => {
+      const anchor = latLonToEcefScene(station.lat, station.lon, EARTH_RADIUS_KM + 10);
+      const normal = anchor.clone().normalize();
+      const marker = new THREE.Mesh(
+        new THREE.BoxGeometry(0.42, 0.22, 0.08),
+        new THREE.MeshBasicMaterial({ color: 0xffffff })
+      );
+      marker.position.copy(anchor);
+      marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+      stationGroup.add(marker);
+    });
 
     // Lights
     scene.add(new THREE.AmbientLight(0x223355, 5));
@@ -290,8 +345,6 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
         radius * Math.sin(phi) * Math.cos(theta)
       );
       camera.lookAt(0, 0, 0);
-      earth.rotation.y += 0.0005;
-
       // Tumble debris
       debrisMeshes.forEach(m => {
         m.rotation.x += m.userData.rotSpeed.x;
@@ -358,7 +411,7 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
       ghostOrbit: ghostOrbitLine, flareRing, flareProgress: 0,
       exhaust, exhaustActive: false,
       exhaustOrigin: new THREE.Vector3(), exhaustDir: new THREE.Vector3(1, 0, 0),
-      earth, animId, isDragging, lastMouse, theta, phi, radius,
+      earthGroup, stationGroup, animId, isDragging, lastMouse, theta, phi, radius,
     };
 
     const onResize = () => {
@@ -381,6 +434,12 @@ export default function GlobeScene({ satellites, debris, selectedId, hoveredId, 
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement);
     };
   }, []);
+
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s) return;
+    s.earthGroup.rotation.y = gmstRadians(simTime);
+  }, [simTime]);
 
   // Update positions + visuals each tick
   useEffect(() => {

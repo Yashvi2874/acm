@@ -27,6 +27,13 @@ export interface DebrisPoint {
   inclination: number;
 }
 
+export interface GroundStation {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+}
+
 export interface Maneuver {
   id: string;
   satelliteId: string;
