@@ -365,40 +365,94 @@ _STATUS_FRONTEND = {
 @router.get("/snapshot", summary="Simulation snapshot in frontend-compatible shape")
 async def get_snapshot():
     """
-    Returns satellites and debris in the exact shape the React frontend expects:
-      satellites: Satellite[]  (id, name, status, fuel 0-100, pos, vel, orbitRadius,
-                                orbitInclination, orbitPhase, orbitSpeed, collisionRisk)
-      debris:     DebrisPoint[] (x, y, z, vx, vy, vz, r, phase, speed, inclination)
-      cdm_warnings: list
-      sim_time: str
+    Returns satellites and debris in the exact shape the React frontend expects.
+    Each satellite includes a live `conjunctions` array computed from current positions
+    using the linear TCA formula — ready for the DetailPanel proximity display.
     """
     async with simulation_state.lock:
-        # Collect active CDM satellite IDs for collision risk flag
+        # ── Build per-satellite conjunction data ──────────────────────────
+        # Gather all bodies (sats + debris) for proximity check
+        import numpy as np
+        from physics.conjunction import compute_tca, compute_relative_state
+
+        COARSE_KM = 500.0          # only check objects within this radius
+        SAFETY_KM = 0.100          # 100 m violation threshold
+        T_WINDOW  = 5400.0         # 90-minute lookahead
+
+        all_bodies: list[dict] = []
+        for sid, sat in simulation_state.satellites.items():
+            all_bodies.append({"id": sid, "type": "sat",
+                                "pos": sat.position, "vel": sat.velocity})
+        for did, deb in simulation_state.debris.items():
+            all_bodies.append({"id": did, "type": "deb",
+                                "pos": deb.position, "vel": deb.velocity})
+
+        # Build per-satellite conjunction list
+        sat_conjunctions: dict[str, list[dict]] = {
+            sid: [] for sid in simulation_state.satellites
+        }
+
+        for sid in simulation_state.satellites:
+            sat = simulation_state.satellites[sid]
+            sat_pos = np.array(sat.position)
+
+            for body in all_bodies:
+                if body["id"] == sid:
+                    continue
+                body_pos = np.array(body["pos"])
+                current_sep = float(np.linalg.norm(sat_pos - body_pos))
+                if current_sep > COARSE_KM:
+                    continue
+
+                state_a = np.array(sat.position + sat.velocity)
+                state_b = np.array(body["pos"] + body["vel"])
+                tau, d_min, dr_tca = compute_tca(state_a, state_b)
+
+                # Include if TCA is in future window OR currently very close
+                if (0 <= tau <= T_WINDOW) or current_sep < COARSE_KM * 0.1:
+                    sat_conjunctions[sid].append({
+                        "object_b_id":    body["id"],
+                        "d_min_km":       round(d_min, 4),
+                        "current_sep_km": round(current_sep, 4),
+                        "tau_seconds":    round(tau, 2),
+                        "tau_minutes":    round(tau / 60, 2),
+                        "is_violation":   d_min < SAFETY_KM,
+                        "delta_r_tca":    [round(x, 4) for x in dr_tca.tolist()],
+                    })
+
+            # Sort by d_min ascending — most dangerous first
+            sat_conjunctions[sid].sort(key=lambda e: e["d_min_km"])
+
+        # ── CDM risk pairs ────────────────────────────────────────────────
         risk_pairs: dict[str, str] = {}
         for w in simulation_state.active_cdm_warnings:
             risk_pairs[w.object_1_id] = w.object_2_id
             risk_pairs[w.object_2_id] = w.object_1_id
 
+        # Also flag from live conjunctions
+        for sid, conjs in sat_conjunctions.items():
+            if conjs and conjs[0]["is_violation"]:
+                risk_pairs.setdefault(sid, conjs[0]["object_b_id"])
+
+        # ── Satellites ────────────────────────────────────────────────────
         satellites_out = []
         for sid, sat in simulation_state.satellites.items():
             r = _orbital_radius(sat.position)
             inc = _inclination(sat.position, sat.velocity)
             phase = _orbit_phase(sat.position, inc)
             speed_kms = _math.sqrt(sum(v * v for v in sat.velocity))
-            # Angular speed ≈ v_tangential / r  (rad/s)
             orbit_speed = speed_kms / r if r > 0 else 0.0
 
             fuel_pct = round(100.0 * sat.fuel_kg / max(sat.initial_fuel_kg, 1e-9))
             fuel_pct = max(0, min(100, fuel_pct))
 
             frontend_status = _STATUS_FRONTEND.get(sat.status, "nominal")
-            # Upgrade to warning/critical based on CDM
             if sid in risk_pairs:
                 frontend_status = "critical"
 
             satellites_out.append({
                 "id":               sid,
-                "name":             sid,          # use id as name; frontend can override
+                "name":             sid,
                 "status":           frontend_status,
                 "fuel":             fuel_pct,
                 "pos":              sat.position,
@@ -409,8 +463,10 @@ async def get_snapshot():
                 "orbitSpeed":       round(orbit_speed, 8),
                 "collisionRisk":    sid in risk_pairs,
                 "riskTarget":       risk_pairs.get(sid),
+                "conjunctions":     sat_conjunctions.get(sid, []),
             })
 
+        # ── Debris ────────────────────────────────────────────────────────
         debris_out = []
         for did, deb in simulation_state.debris.items():
             r = _orbital_radius(deb.position)
@@ -440,9 +496,9 @@ async def get_snapshot():
         ]
 
         return {
-            "sim_time":    simulation_state.sim_time.isoformat(),
-            "satellites":  satellites_out,
-            "debris":      debris_out,
+            "sim_time":     simulation_state.sim_time.isoformat(),
+            "satellites":   satellites_out,
+            "debris":       debris_out,
             "cdm_warnings": cdm_out,
         }
 

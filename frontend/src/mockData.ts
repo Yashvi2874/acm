@@ -45,33 +45,54 @@ export function generateSatellites(): Satellite[] {
 
 export function generateDebris(): DebrisPoint[] {
   const rand = rng(99);
-  const MU = 398600.4418; // km³/s²
-  return Array.from({ length: 50 }, () => {
+  const MU = 398600.4418;
+  const pieces = Array.from({ length: 50 }, () => {
     const r = rand;
-    // Keep debris in same orbital band as satellites (LEO: 6771–7971 km)
     const radius = 6771 + r() * 1200;
     const inc = r() * Math.PI;
     const phase = r() * Math.PI * 2;
     const speed = 0.0003 + r() * 0.0008;
-
-    // ECI position
     const x = radius * Math.cos(phase) * Math.cos(inc);
     const y = radius * Math.sin(phase);
     const z = radius * Math.cos(phase) * Math.sin(inc);
-
-    // Circular orbit velocity (perpendicular to position in orbit plane)
-    const v_circ = Math.sqrt(MU / radius); // km/s
-    // Velocity direction: d(pos)/d(phase) normalized × v_circ
-    const vx = v_circ * (-Math.sin(phase) * Math.cos(inc));
-    const vy = v_circ * Math.cos(phase);
-    const vz = v_circ * (-Math.sin(phase) * Math.sin(inc));
-
+    const v_circ = Math.sqrt(MU / radius);
     return {
       x, y, z,
-      vx, vy, vz,
+      vx: v_circ * (-Math.sin(phase) * Math.cos(inc)),
+      vy: v_circ * Math.cos(phase),
+      vz: v_circ * (-Math.sin(phase) * Math.sin(inc)),
       r: radius, phase, speed, inclination: inc,
     };
   });
+
+  // Force 3 debris pieces onto intersecting orbits with SAT-001, SAT-003, SAT-007
+  // Same radius + inclination, slightly offset phase so they approach over time
+  const sats = generateSatellites();
+  const targets = [
+    { sat: sats.find(s => s.id === 'SAT-001')!, debIdx: 0 },
+    { sat: sats.find(s => s.id === 'SAT-003')!, debIdx: 1 },
+    { sat: sats.find(s => s.id === 'SAT-007')!, debIdx: 2 },
+  ];
+  targets.forEach(({ sat, debIdx }) => {
+    const phase = sat.orbitPhase + 0.18; // slightly ahead — will converge
+    const r = sat.orbitRadius;
+    const inc = sat.orbitInclination;
+    const MU2 = 398600.4418;
+    const v = Math.sqrt(MU2 / r);
+    pieces[debIdx] = {
+      x: r * Math.cos(phase) * Math.cos(inc),
+      y: r * Math.sin(phase),
+      z: r * Math.cos(phase) * Math.sin(inc),
+      vx: v * (-Math.sin(phase) * Math.cos(inc)),
+      vy: v * Math.cos(phase),
+      vz: v * (-Math.sin(phase) * Math.sin(inc)),
+      r, phase,
+      speed: sat.orbitSpeed * 0.98, // slightly slower — satellite catches up
+      inclination: inc,
+    };
+  });
+
+  return pieces;
 }
 
 export function generateManeuvers(satellites: Satellite[]): Maneuver[] {

@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import type { Satellite, DebrisPoint, GroundStation, ManeuverPlan } from '../types';
-import { createEarthDayTexture, createEarthNightTexture, createCloudTexture, createSpecularMap } from '../assets/earthTextures';
 
 interface Props {
   satellites: Satellite[];
@@ -145,9 +144,6 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     exhaustOrigin: THREE.Vector3;
     exhaustDir: THREE.Vector3;
     earthGroup: THREE.Group;
-    earthMesh: THREE.Mesh | null;
-    cloudMesh: THREE.Mesh | null;
-    atmosphereMesh: THREE.Mesh | null;
     stationGroup: THREE.Group;
     animId: number;
     isDragging: boolean;
@@ -181,91 +177,109 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     const stationGroup = new THREE.Group();
     earthGroup.add(stationGroup);
 
-    // ── REALISTIC EARTH SPHERE ────────────────────────────────────────────────
-    // Generate procedural textures
-    const dayTexture = createEarthDayTexture(2048);
-    const nightTexture = createEarthNightTexture(2048);
-    const cloudTex = createCloudTexture(2048);
-    const specularTex = createSpecularMap(2048);
+    const loader = new THREE.TextureLoader();
+    const R = 6371 * SCALE;
 
-    const dayCanvasTexture = new THREE.CanvasTexture(dayTexture);
-    const nightCanvasTexture = new THREE.CanvasTexture(nightTexture);
-    const cloudCanvasTexture = new THREE.CanvasTexture(cloudTex);
-    const specularCanvasTexture = new THREE.CanvasTexture(specularTex);
-
-    // Earth sphere with day/night cycle
-    const earthGeometry = new THREE.SphereGeometry(6371 * SCALE, 128, 128);
-    const earthMaterial = new THREE.MeshPhongMaterial({
-      map: dayCanvasTexture,
-      specularMap: specularCanvasTexture,
-      specular: new THREE.Color(0x333333),
-      shininess: 15,
+    // Base earth — loads texture async, shows fallback color immediately
+    const earthMat = new THREE.MeshPhongMaterial({
+      color: 0x1a4a7a,
+      emissive: 0x051525,
+      specular: 0x224466,
+      shininess: 25,
     });
-    const earth = new THREE.Mesh(earthGeometry, earthMaterial);
+    const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 64, 64), earthMat);
     earthGroup.add(earth);
 
-    // Night lights layer (additive blending, only visible on dark side)
-    const nightGeometry = new THREE.SphereGeometry((6371 + 0.5) * SCALE, 128, 128);
-    const nightMaterial = new THREE.MeshBasicMaterial({
-      map: nightCanvasTexture,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      side: THREE.FrontSide,
+    // Load NASA Blue Marble textures from public CDN
+    const BASE = 'https://unpkg.com/three@0.160.0/examples/textures/planets';
+    loader.load(`${BASE}/earth_atmos_2048.jpg`, tex => {
+      earthMat.map = tex;
+      earthMat.color.set(0xffffff);
+      earthMat.needsUpdate = true;
     });
-    const nightMesh = new THREE.Mesh(nightGeometry, nightMaterial);
-    earthGroup.add(nightMesh);
-
-    // Cloud layer (slightly larger sphere, semi-transparent)
-    const cloudGeometry = new THREE.SphereGeometry((6371 + 15) * SCALE, 128, 128);
-    const cloudMaterial = new THREE.MeshLambertMaterial({
-      map: cloudCanvasTexture,
-      transparent: true,
-      opacity: 0.45,
-      depthWrite: false,
-      blending: THREE.NormalBlending,
+    loader.load(`${BASE}/earth_specular_2048.jpg`, tex => {
+      earthMat.specularMap = tex;
+      earthMat.needsUpdate = true;
     });
-    const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
-    earthGroup.add(cloudMesh);
-
-    // Atmospheric glow (custom shader effect using fresnel-like approach)
-    const atmoGeometry = new THREE.SphereGeometry((6371 + 50) * SCALE, 64, 64);
-    const atmoMaterial = new THREE.ShaderMaterial({
-      vertexShader: `
-        varying vec3 vNormal;
-        varying vec3 vPosition;
-        void main() {
-          vNormal = normalize(normalMatrix * normal);
-          vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vNormal;
-        varying vec3 vPosition;
-        void main() {
-          float intensity = pow(0.7 - dot(vNormal, vec3(0, 0, 1.0)), 2.0);
-          vec3 atmosphereColor = vec3(0.3, 0.6, 1.0) * intensity;
-          gl_FragColor = vec4(atmosphereColor, intensity * 0.6);
-        }
-      `,
-      blending: THREE.AdditiveBlending,
-      side: THREE.BackSide,
-      transparent: true,
-      depthWrite: false,
+    loader.load(`${BASE}/earth_normal_2048.jpg`, tex => {
+      earthMat.normalMap = tex;
+      earthMat.normalScale.set(0.6, 0.6);
+      earthMat.needsUpdate = true;
     });
-    const atmosphereMesh = new THREE.Mesh(atmoGeometry, atmoMaterial);
-    earthGroup.add(atmosphereMesh);
 
-    // Wireframe overlay (subtle tech grid)
-    earthGroup.add(new THREE.Mesh(new THREE.SphereGeometry(6371 * SCALE + 0.01, 24, 24),
-      new THREE.MeshBasicMaterial({ color: 0x0d3a5c, wireframe: true, transparent: true, opacity: 0.15 })));
-    
-    // Outer atmospheric shell (faint blue)
-    earthGroup.add(new THREE.Mesh(new THREE.SphereGeometry(6471 * SCALE, 32, 32),
-      new THREE.MeshBasicMaterial({ color: 0x0066aa, transparent: true, opacity: 0.08, side: THREE.BackSide })));
+    // Clouds layer — slightly larger sphere
+    const cloudMat = new THREE.MeshPhongMaterial({
+      transparent: true, opacity: 0.35, depthWrite: false,
+    });
+    const clouds = new THREE.Mesh(new THREE.SphereGeometry(R * 1.005, 64, 64), cloudMat);
+    earthGroup.add(clouds);
+    loader.load(`${BASE}/earth_clouds_1024.png`, tex => {
+      cloudMat.map = tex;
+      cloudMat.alphaMap = tex;
+      cloudMat.needsUpdate = true;
+    });
 
-    const gridMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.16 });
+    // ── GeoJSON country borders — real geometry following sphere curvature ──
+    const BORDER_R_KM = EARTH_RADIUS_KM + 2; // 2km above surface to avoid z-fighting
+
+    const borderLineMat = new THREE.LineBasicMaterial({
+      color: 0xaaccff, transparent: true, opacity: 0.6, depthWrite: false,
+    });
+
+    fetch('https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson')
+      .then(r => r.json())
+      .then((geoJson: { features: Array<{ geometry: { type: string; coordinates: unknown } }> }) => {
+        const allPositions: number[] = [];
+
+        const processRing = (ring: number[][]) => {
+          for (let i = 0; i < ring.length - 1; i++) {
+            const [lon1, lat1] = ring[i];
+            const [lon2, lat2] = ring[i + 1];
+            const steps = 4;
+            for (let s = 0; s < steps; s++) {
+              const t0 = s / steps;
+              const t1 = (s + 1) / steps;
+              const p0 = latLonToEcefScene(lat1 + (lat2 - lat1) * t0, lon1 + (lon2 - lon1) * t0, BORDER_R_KM);
+              const p1 = latLonToEcefScene(lat1 + (lat2 - lat1) * t1, lon1 + (lon2 - lon1) * t1, BORDER_R_KM);
+              allPositions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z);
+            }
+          }
+          // Close the ring — connect last point back to first
+          const [lonA, latA] = ring[ring.length - 1];
+          const [lonB, latB] = ring[0];
+          const steps = 4;
+          for (let s = 0; s < steps; s++) {
+            const t0 = s / steps;
+            const t1 = (s + 1) / steps;
+            const p0 = latLonToEcefScene(latA + (latB - latA) * t0, lonA + (lonB - lonA) * t0, BORDER_R_KM);
+            const p1 = latLonToEcefScene(latA + (latB - latA) * t1, lonA + (lonB - lonA) * t1, BORDER_R_KM);
+            allPositions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z);
+          }
+        };
+
+        geoJson.features.forEach(f => {
+          const { type, coordinates } = f.geometry as { type: string; coordinates: unknown };
+          if (type === 'Polygon') {
+            (coordinates as number[][][]).forEach(processRing);
+          } else if (type === 'MultiPolygon') {
+            (coordinates as number[][][][]).forEach(poly => poly.forEach(processRing));
+          }
+        });
+
+        const borderGeo = new THREE.BufferGeometry();
+        borderGeo.setAttribute('position', new THREE.Float32BufferAttribute(allPositions, 3));
+        earthGroup.add(new THREE.LineSegments(borderGeo, borderLineMat));
+      })
+      .catch(() => console.warn('GeoJSON borders unavailable'));
+
+    // Atmosphere glow (back-face sphere, always visible)
+    earthGroup.add(new THREE.Mesh(
+      new THREE.SphereGeometry(R * 1.025, 32, 32),
+      new THREE.MeshBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.10, side: THREE.BackSide })
+    ));
+
+    // Lat/lon grid lines (subtle, on top of texture)
+    const gridMaterial = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08 });
     for (let lat = -75; lat <= 75; lat += 15) {
       const points: THREE.Vector3[] = [];
       for (let lon = -180; lon <= 180; lon += 3) {
@@ -327,6 +341,8 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       mesh.position.copy(toScene(d.x, d.y, d.z));
       mesh.rotation.set(rand() * Math.PI * 2, rand() * Math.PI * 2, rand() * Math.PI * 2);
       mesh.userData.rotSpeed = { x: (rand() - 0.5) * 0.02, y: (rand() - 0.5) * 0.02, z: (rand() - 0.5) * 0.02 };
+      // Store orbital params for animation
+      mesh.userData.orbit = { r: d.r, phase: d.phase, speed: d.speed, inc: d.inclination };
       scene.add(mesh);
       debrisMeshes.push(mesh);
     });
@@ -423,18 +439,21 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         radius * Math.sin(phi) * Math.cos(theta)
       );
       camera.lookAt(0, 0, 0);
-      
-      // Rotate cloud layer slightly faster than Earth for dynamic effect
-      const s = sceneRef.current;
-      if (s?.cloudMesh) {
-        s.cloudMesh.rotation.y += 0.0001; // Slow cloud drift
-      }
-      
-      // Tumble debris
+      // Slowly rotate clouds relative to earth
+      if (clouds) clouds.rotation.y += 0.00008;
+      // Tumble debris + advance orbital position
       debrisMeshes.forEach(m => {
         m.rotation.x += m.userData.rotSpeed.x;
         m.rotation.y += m.userData.rotSpeed.y;
         m.rotation.z += m.userData.rotSpeed.z;
+        // Advance orbit phase at same rate as satellites (speed * dt * 40)
+        const o = m.userData.orbit;
+        o.phase += o.speed * 0.016 * 40;
+        m.position.copy(toScene(
+          o.r * Math.cos(o.phase) * Math.cos(o.inc),
+          o.r * Math.sin(o.phase),
+          o.r * Math.cos(o.phase) * Math.sin(o.inc)
+        ));
       });
 
       // Exhaust particles
@@ -496,7 +515,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       ghostOrbit: ghostOrbitLine, flareRing, flareProgress: 0,
       exhaust, exhaustActive: false,
       exhaustOrigin: new THREE.Vector3(), exhaustDir: new THREE.Vector3(1, 0, 0),
-      earthGroup, earthMesh: earth, cloudMesh, atmosphereMesh, stationGroup, animId, isDragging, lastMouse, theta, phi, radius,
+      earthGroup, stationGroup, animId, isDragging, lastMouse, theta, phi, radius,
     };
 
     const onResize = () => {
@@ -523,13 +542,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
   useEffect(() => {
     const s = sceneRef.current;
     if (!s) return;
-    const gmst = gmstRadians(simTime);
-    // Rotate entire Earth group (surface + night lights + clouds + atmosphere) for ECI→ECEF
-    s.earthGroup.rotation.y = gmst;
-    // Add slight independent cloud drift relative to surface
-    if (s.cloudMesh) {
-      s.cloudMesh.rotation.y = gmst + Date.now() * 0.00001;
-    }
+    s.earthGroup.rotation.y = gmstRadians(simTime);
   }, [simTime]);
 
   // Update positions + visuals each tick

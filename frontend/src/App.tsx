@@ -3,13 +3,11 @@ import TopBar from './components/TopBar';
 import SatelliteList from './components/SatelliteList';
 import GlobeScene from './components/GlobeScene';
 import DetailPanel from './components/DetailPanel';
-import Timeline from './components/Timeline';
-import Tooltip from './components/Tooltip';
+import ManeuverTimeline from './components/ManeuverTimeline';import Tooltip from './components/Tooltip';
 import ManeuverModal from './components/ManeuverModal';
-import OperationalDashboard from './components/OperationalDashboard';
 import { generateSatellites, generateDebris, generateManeuvers } from './mockData';
 import { usePhysicsSimulation } from './usePhysicsSimulation';
-import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan, CdmWarning } from './types';
+import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan } from './types';
 
 const INITIAL_SATS = generateSatellites();
 const INITIAL_DEBRIS = generateDebris();
@@ -35,21 +33,20 @@ export default function App() {
   const [maneuverPlan, setManeuverPlan] = useState<ManeuverPlan | null>(null);
   const [flaringId, setFlaringId] = useState<string | null>(null);
   const [useMock, setUseMock] = useState(false);
-  const [showDashboard, setShowDashboard] = useState(false);
-  const [cdmWarnings, setCdmWarnings] = useState<CdmWarning[]>([]);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [collisionAlerts, setCollisionAlerts] = useState<{ satId: string; debIdx: number; dist: number }[]>([]);
+  const autoManeuveredRef = useRef<Set<string>>(new Set()); // prevent re-triggering
   const timeRef = useRef(0);
   const hoveredIdRef = useRef<string | null>(null);
 
   // Physics backend integration — seeds state and polls step+snapshot
   usePhysicsSimulation({
-    initialSatellites: INITIAL_SATS, // Use mock data only for initialization if backend fails
+    initialSatellites: INITIAL_SATS,
     initialDebris: INITIAL_DEBRIS,
     enabled: !useMock,
-    onUpdate: (sats, deb, cdm, nextSimTime) => {
-      // Display ALL satellites and debris from backend (no filtering)
+    onUpdate: (sats, deb, _cdm, nextSimTime) => {
       setSatellites(sats);
       setDebris(deb);
-      setCdmWarnings(cdm);
       setSimTime(nextSimTime);
       setTick(t => t + 1);
     },
@@ -87,8 +84,67 @@ export default function App() {
 
   const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
-  const handleHover = useCallback((id: string | null, x: number, y: number) => {
-    hoveredIdRef.current = id;
+  // ── Collision detection + auto-avoidance ─────────────────────────────
+  const WARN_DIST = 180;   // km — show warning
+  const AVOID_DIST = 80;   // km — trigger auto-maneuver
+
+  useEffect(() => {
+    const alerts: { satId: string; debIdx: number; dist: number }[] = [];
+    satellites.forEach(sat => {
+      if (sat.autoManeuvering) return;
+      let closest = { dist: Infinity, idx: -1 };
+      debris.forEach((d, idx) => {
+        const dx = sat.pos[0] - d.x, dy = sat.pos[1] - d.y, dz = sat.pos[2] - d.z;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist < closest.dist) closest = { dist, idx };
+      });
+
+      if (closest.dist < WARN_DIST) {
+        alerts.push({ satId: sat.id, debIdx: closest.idx, dist: closest.dist });
+        setSatellites(prev => prev.map(s =>
+          s.id === sat.id ? { ...s, collisionRisk: true, threatDebrisIdx: closest.idx } : s
+        ));
+      } else {
+        setSatellites(prev => prev.map(s =>
+          s.id === sat.id && s.collisionRisk && !s.autoManeuvering
+            ? { ...s, collisionRisk: false, threatDebrisIdx: undefined } : s
+        ));
+      }
+
+      // Auto-avoidance burn
+      if (closest.dist < AVOID_DIST && !autoManeuveredRef.current.has(sat.id)) {
+        autoManeuveredRef.current.add(sat.id);
+        const mnvId = `AUTO-${sat.id}-${Date.now()}`;
+        const deltaV = 0.3 + Math.random() * 0.2;
+        const fuelCost = Math.round(deltaV * 20);
+        setSatellites(prev => prev.map(s => {
+          if (s.id !== sat.id) return s;
+          const newRadius = s.orbitRadius + deltaV * 200;
+          const newFuel = Math.max(0, s.fuel - fuelCost);
+          return {
+            ...s, orbitRadius: newRadius, fuel: newFuel, collisionRisk: false,
+            status: newFuel < 20 ? 'critical' : newFuel < 50 ? 'warning' : 'nominal',
+            autoManeuvering: true, lastManeuver: mnvId, threatDebrisIdx: undefined,
+          };
+        }));
+        setManeuvers(prev => [...prev, {
+          id: mnvId, satelliteId: sat.id, type: 'avoidance',
+          startHour: 0, durationHours: 0.1, deltaV, executed: true,
+        }]);
+        setFlaringId(sat.id);
+        setTimeout(() => setFlaringId(null), 3000);
+        setTimeout(() => {
+          setSatellites(prev => prev.map(s =>
+            s.id === sat.id ? { ...s, autoManeuvering: false } : s
+          ));
+          autoManeuveredRef.current.delete(sat.id);
+        }, 5000);
+      }
+    });
+    setCollisionAlerts(alerts);
+  }, [tick]);
+
+  const handleHover = useCallback((id: string | null, x: number, y: number) => {    hoveredIdRef.current = id;
     setHoveredId(id);
     setTooltip({ sat: id ? satellites.find(s => s.id === id) ?? null : null, x, y });
   }, [satellites]);
@@ -175,101 +231,106 @@ export default function App() {
         @keyframes flare { 0%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(4)} }
       `}</style>
 
-      <TopBar 
-        satellites={satellites} 
-        showDashboard={showDashboard}
-        onToggleDashboard={() => setShowDashboard(!showDashboard)}
-      />
+      <TopBar satellites={satellites} />
 
-      {showDashboard ? (
-        <OperationalDashboard
-          satellites={satellites}
-          debris={debris}
-          cdmWarnings={cdmWarnings}
-          simTime={simTime}
-        />
-      ) : (
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+        {/* Left panel */}
+        <div style={{ width: 260, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
           <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
+          {/* Timeline button at bottom of list */}
+          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+            <button onClick={() => setShowTimeline(true)} style={{
+              width: '100%', padding: '9px', borderRadius: 6, fontSize: 10,
+              fontFamily: 'var(--font-mono)', letterSpacing: 1, fontWeight: 700,
+              border: '1px solid var(--border)', color: 'var(--cyan)',
+              background: 'var(--cyan-dim)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}>
+              📅 MANEUVER TIMELINE
+            </button>
+          </div>
+        </div>
+        {/* Center globe */}
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+          {/* Scanline overlay */}
+          <div style={{
+            position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1,
+            background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.015) 2px, rgba(0,212,255,0.015) 4px)',
+          }} />
 
-          {/* Center globe */}
-          <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-            {/* Scanline overlay */}
-            <div style={{
-              position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1,
-              background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.015) 2px, rgba(0,212,255,0.015) 4px)',
-            }} />
+          <CornerDeco pos="tl" />
+          <CornerDeco pos="tr" />
+          <CornerDeco pos="bl" />
+          <CornerDeco pos="br" />
 
-            <CornerDeco pos="tl" />
-            <CornerDeco pos="tr" />
-            <CornerDeco pos="bl" />
-            <CornerDeco pos="br" />
+          <GlobeScene
+            satellites={satellites}
+            debris={debris}
+            groundStations={GROUND_STATIONS}
+            simTime={simTime}
+            selectedId={selectedId}
+            hoveredId={hoveredId}
+            maneuverPlan={maneuverModal ? maneuverPlan : null}
+            flaringId={flaringId}
+            collisionAlerts={collisionAlerts}
+            onSelect={setSelectedId}
+            onHover={handleHover}
+            tick={tick}
+          />
 
-            <GlobeScene
-              satellites={satellites}
-              debris={debris}
-              groundStations={GROUND_STATIONS}
-              simTime={simTime}
-              selectedId={selectedId}
-              hoveredId={hoveredId}
-              maneuverPlan={maneuverModal ? maneuverPlan : null}
-              flaringId={flaringId}
-              onSelect={setSelectedId}
-              onHover={handleHover}
-              tick={tick}
-            />
-
-            {/* HUD */}
-            <div style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 2, pointerEvents: 'none' }}>
-              <HudStats satellites={satellites} />
-            </div>
-
-            {/* Controls hint */}
-            <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 2, pointerEvents: 'none' }}>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', textAlign: 'right', lineHeight: 1.8 }}>
-                <div>DRAG — ROTATE</div>
-                <div>SCROLL — ZOOM</div>
-                <div>CLICK — SELECT</div>
-              </div>
-            </div>
-
-            {/* Ghost orbit legend */}
-            {maneuverModal && maneuverPlan && (
-              <div style={{
-                position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
-                zIndex: 2, pointerEvents: 'none',
-                background: 'rgba(2,8,23,0.9)', border: '1px solid rgba(255,255,255,0.15)',
-                borderRadius: 6, padding: '6px 14px',
-                display: 'flex', alignItems: 'center', gap: 10,
-              }}>
-                <div style={{ width: 24, height: 1, borderTop: '2px dashed rgba(255,255,255,0.7)' }} />
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', letterSpacing: 1 }}>
-                  PREDICTED ORBIT
-                </span>
-              </div>
-            )}
+          {/* HUD */}
+          <div style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 2, pointerEvents: 'none' }}>
+            <HudStats satellites={satellites} />
           </div>
 
-          <DetailPanel
-            satellite={selectedSat}
-            maneuvers={maneuvers}
-            onPlanManeuver={handleOpenModal}
-          />
-        </div>
-      )}
+          {/* Controls hint */}
+          <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 2, pointerEvents: 'none' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', textAlign: 'right', lineHeight: 1.8 }}>
+              <div>DRAG — ROTATE</div>
+              <div>SCROLL — ZOOM</div>
+              <div>CLICK — SELECT</div>
+            </div>
+          </div>
 
-      {!showDashboard && (
-        <>
-          <Timeline maneuvers={maneuvers} />
-          <Tooltip satellite={tooltip.sat} x={tooltip.x} y={tooltip.y} />
-        </>
-      )}
+          {/* Ghost orbit legend */}
+          {maneuverModal && maneuverPlan && (
+            <div style={{
+              position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 2, pointerEvents: 'none',
+              background: 'rgba(2,8,23,0.9)', border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 6, padding: '6px 14px',
+              display: 'flex', alignItems: 'center', gap: 10,
+            }}>
+              <div style={{ width: 24, height: 1, borderTop: '2px dashed rgba(255,255,255,0.7)' }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', letterSpacing: 1 }}>
+                PREDICTED ORBIT
+              </span>
+            </div>
+          )}
+        </div>
+
+        <DetailPanel
+          satellite={selectedSat}
+          maneuvers={maneuvers}
+          onPlanManeuver={handleOpenModal}
+        />
+      </div>
+
+      <Tooltip satellite={tooltip.sat} x={tooltip.x} y={tooltip.y} />
 
       {maneuverModal && selectedSat && (
         <ManeuverModal
           satellite={selectedSat}
           onConfirm={handleConfirmManeuver}
           onCancel={() => { setManeuverModal(false); setManeuverPlan(null); }}
+        />
+      )}
+
+      {showTimeline && (
+        <ManeuverTimeline
+          maneuvers={maneuvers}
+          satellites={satellites}
+          onClose={() => setShowTimeline(false)}
         />
       )}
     </div>
