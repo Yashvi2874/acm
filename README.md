@@ -4,150 +4,85 @@
 
 *Built for National Space Hackathon 2026*
 
-[![Deploy to Render](https://img.shields.io/badge/deployed%20on-render-blue)](https://render.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+---
 
-**Live Demo**: https://acm-frontend.onrender.com
+## 🚀 Quick Start
+
+### Windows Users
+Double-click `start.bat` to launch all services. Access at http://localhost:3000
+
+### Manual Start
+```bash
+docker compose up --build
+```
 
 ---
 
 ## 🌟 Overview
 
-ACM is an autonomous constellation management platform for tracking space debris, predicting collisions, and planning avoidance maneuvers. Built with modern web technologies and deployed on cloud infrastructure with automatic CI/CD.
+ACM tracks space debris, predicts collisions, and plans avoidance maneuvers using high-performance telemetry processing and RK4+J2 orbital propagation.
 
 ---
 
 ## ✨ Features
 
-### Real-Time 3D Visualization
-- Interactive Earth globe with orbiting satellites (Three.js)
-- Live telemetry data display
-- Orbital mechanics visualization
-- Ground station coverage maps
-
-### Physics Simulation Engine
-- SGP4/SDP4 orbital propagators
-- Conjunction analysis & collision detection
-- Maneuver planning with delta-V optimization
-- Ground station visibility predictions
-
-### High-Performance Telemetry
-- Go-based ingestion service (10k+ buffered capacity)
-- Worker pool processing (32 concurrent workers)
-- MongoDB Atlas integration
-- Real-time data streaming
-
-### Autonomous Detection
-- Automated close approach alerts
-- Optimal avoidance maneuver suggestions
-- Multi-satellite constellation tracking
-- Pass predictions for ground stations
+- **Real-Time 3D Visualization**: Interactive Three.js globe with live satellite tracking
+- **Physics Simulation**: RK4 integration with J2 perturbations for accurate orbit prediction
+- **Collision Detection**: k-d tree O(N log N) conjunction analysis with 100m threshold
+- **High-Frequency Telemetry**: Go-based ingestion (10k+ buffered capacity, 32 workers)
+- **Autonomous Alerts**: Automated close approach detection and maneuver planning
 
 ---
 
 ## 🛠️ Technology Stack
 
-### Frontend
-- **React 19** + TypeScript
-- **Three.js** for 3D rendering
-- **Vite** for fast builds
-
-### Backend Services
-- **Python FastAPI** - Physics engine & orbital mechanics
-- **Golang** - High-performance telemetry ingestion
-- **MongoDB Atlas** - Cloud database
-
-### DevOps
-- **Docker** - Containerization
-- **Render** - Cloud hosting with auto-deploy
-- **GitHub** - CI/CD pipeline
+**Frontend**: React 19 + TypeScript + Three.js  
+**Backend**: Python FastAPI (physics engine) + Golang (telemetry)  
+**Database**: MongoDB Atlas  
+**Deployment**: Docker + Render (auto-deploy on git push)
 
 ---
 
-## 🚀 Quick Start
+## 📦 Architecture
 
-### Prerequisites
-- Node.js 20+
-- Python 3.10+
-- Go 1.22+
-- Docker Desktop
+```
+Frontend (Port 3000) → Backend API (Port 8000) → Go Adapter (Port 8080) → MongoDB Atlas
+```
 
-### Local Development
+---
+
+## 🧪 Testing
 
 ```bash
-# Clone repository
-git clone https://github.com/Yashvi2874/acm.git
-cd acm
+# Seed database with realistic orbits
+docker cp seed_realistic_orbits.py nsh_debris-acm-backend-1:/app/
+docker compose exec acm-backend python3 seed_realistic_orbits.py
 
-# Start all services
-docker compose up --build
-```
-
-**Access at:**
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000/docs
-- Go Adapter: http://localhost:8080/health
-
----
-
-## 📦 Deployment
-
-### Deploy to Render (17 minutes)
-
-See **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** for complete step-by-step instructions.
-
-**Quick summary:**
-1. Sign up at https://render.com with GitHub
-2. Deploy 3 services (Go adapter, Python backend, Frontend)
-3. Get your live URL: `https://acm-frontend.onrender.com`
-4. Auto-deploys on every git push!
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────┐
-│   Frontend  │ ← React + Three.js (Port 80)
-│   (React)   │    3D Globe Visualization
-└──────┬──────┘
-       │ REST API
-       ▼
-┌─────────────┐
-│   Backend   │ ← FastAPI Physics Engine (Port 8000)
-│  (FastAPI)  │    SGP4/SDP4 Propagators
-└──────┬──────┘
-       │ Telemetry Stream
-       ▼
-┌─────────────┐
-│Go Adapter   │ ← Golang Ingestion (Port 8080)
-│   (Golang)  │    Buffered Worker Pool
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│  MongoDB    │ ← Atlas Cloud Database
-│   (Atlas)   │    Telemetry Storage
-└─────────────┘
+# Run backend physics tests
+cd backend/app/physics/tests
+python run_tests.py
 ```
 
 ---
 
-## 🔬 Physics Engine
+## 📊 Performance
 
-### Implemented Models
+- **Propagation**: RK4+J2 with sub-stepping ≤30s
+- **Conjunction Detection**: k-d tree O(N log N) efficiency
+- **Telemetry**: 10,000+ objects/second throughput
+- **Latency**: <50ms average
+- **Scalability**: Handles 50+ satellites, 10,000+ debris
 
-- **SGP4/SDP4**: Simplified General Perturbations
-- **Orbital Elements**: Keplerian to Cartesian conversion
-- **Ground Station Visibility**: Elevation/Azimuth calculations
-- **Conjunction Assessment**: Close approach detection
-- **Atmospheric Drag**: Jacchia-Roberts model
+---
 
-### Coordinate Systems
+## 🎯 Hackathon Compliance
 
-- ECI (Earth-Centered Inertial)
-- ECEF (Earth-Centered, Earth-Fixed)
-- Topocentric (Observer-based)
+✅ ECI J2000 reference frame  
+✅ J2 perturbation: Exact formula (μ=398600.4418, R_E=6378.137, J2=1.08263×10⁻³)  
+✅ RK4 numerical integration  
+✅ Collision threshold: Exactly 100 meters (0.100 km)  
+✅ Real-time database-driven visualization  
+✅ High-frequency telemetry capable  
 
 ---
 
@@ -155,128 +90,19 @@ See **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** for complete step-by-step i
 
 ```
 acm/
-├── frontend/              # React + Three.js UI
-│   ├── src/
-│   │   ├── components/   # React components
-│   │   └── types.ts      # TypeScript types
-│   └── package.json
-├── backend/              # Python FastAPI service
-│   ├── app/
-│   │   ├── api/         # API routes
-│   │   └── physics/     # Physics engine
-│   └── requirements.txt
-├── go-adapter/          # Go telemetry service
-│   └── internal/        # Business logic
-├── docker-compose.yml   # Docker configuration
-├── DEPLOYMENT_GUIDE.md  # Deployment instructions
-└── README.md            # This file
+├── frontend/           # React + Three.js
+├── backend/            # FastAPI physics engine
+├── go-adapter/         # Go telemetry service
+├── docker-compose.yml  # Docker orchestration
+└── seed_realistic_orbits.py  # Orbit generator
 ```
-
----
-
-## 🧪 Testing
-
-### Run Tests
-
-```bash
-# Backend physics tests
-cd backend/app/physics/tests
-python run_tests.py
-```
-
-### API Documentation
-
-When running, visit:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
----
-
-## 🎯 Usage Examples
-
-### Track a Satellite
-The frontend automatically displays satellites from the catalog. Click any satellite to view:
-- Current position (ECI coordinates)
-- Orbital parameters (semi-major axis, eccentricity, inclination)
-- Ground track prediction
-- Next passes over selected stations
-
-### Simulate Maneuver
-1. Open maneuver modal in UI
-2. Set delta-V and burn direction
-3. View predicted new orbit
-4. See updated conjunction analysis
-
----
-
-## 📊 Performance Metrics
-
-- **Propagation Accuracy**: < 1 km error for LEO objects (24-hour prediction)
-- **Rendering Performance**: 60 FPS with 100+ satellites
-- **Telemetry Throughput**: 10,000+ messages/second
-- **API Response Time**: < 100ms for standard queries
-- **Database Queries**: < 50ms with proper indexing
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/name`)
-3. Commit changes (`git commit -m 'Add feature'`)
-4. Push to branch (`git push origin feature/name`)
-5. Open a Pull Request
 
 ---
 
 ## 📄 License
 
-MIT License - See LICENSE file for details.
+MIT License
 
 ---
 
-## 👥 Hackathon Team
-
-Built with ❤️ for **National Space Hackathon 2026**
-
-### Technologies Used
-- [React](https://react.dev/) - UI framework
-- [Three.js](https://threejs.org/) - 3D graphics
-- [FastAPI](https://fastapi.tiangolo.com/) - Backend API
-- [Go](https://golang.org/) - Telemetry service
-- [MongoDB](https://mongodb.com/) - Database
-- [Render](https://render.com/) - Hosting
-
----
-
-## 🙏 Acknowledgments
-
-- NASA for orbital mechanics resources and TLE data
-- European Space Agency for debris catalogs
-- pymap3d library for coordinate transformations
-- The open-source community
-
----
-
-## 📞 Support
-
-- **Deployment Guide**: [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)
-- **Issues**: Open a GitHub issue
-- **Documentation**: See inline code comments
-
----
-
-## 🚀 Live Links
-
-```
-🏠 Application:  https://acm-frontend.onrender.com
-🔧 API Docs:     https://acm-backend.onrender.com/docs
-💾 GitHub:       https://github.com/Yashvi2874/acm
-⚙️ Telemetry:    https://acm-go-adapter.onrender.com/health
-```
-
----
-
-**Auto-deploys on every git push!** ✨
-
-*Last updated: National Space Hackathon 2026*
+**Built for National Space Hackathon 2026** 🚀

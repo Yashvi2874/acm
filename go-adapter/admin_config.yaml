@@ -1,7 +1,7 @@
-mongo_uri: "mongodb+srv://rajasekharp_db_user:vM4MT9yMtda7dCKj@nsh-test.klojnbb.mongodb.net/?appName=NSH-Test"
-database: "cubesat"
+mongo_uri: "mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM"
+database: "acm"
 collection: "telemetry"
 port: "8080"
 buffer_size: 10000
 worker_count: 32
-mode: "demo"
+mode: "actual"

@@ -4,10 +4,10 @@ services:
 
   go-adapter:
     build: ./go-adapter
-    expose:
-      - "8080"
+    ports:
+      - "8080:8080"
     environment:
-      - MONGO_URI=mongodb+srv://rajasekharp_db_user:vM4MT9yMtda7dCKj@nsh-test.klojnbb.mongodb.net/?appName=NSH-Test
+      - MONGO_URI=mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
