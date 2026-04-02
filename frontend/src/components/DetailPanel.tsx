@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Satellite, Maneuver } from '../types';
+import type { Satellite, Maneuver, ConjunctionInfo } from '../types';
 
 interface Props {
   satellite: Satellite | null;
@@ -83,6 +83,11 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
             </div>
           </div>
         </div>
+      )}
+
+      {/* Live proximity / conjunction data */}
+      {sat.conjunctions && sat.conjunctions.length > 0 && (
+        <ProximitySection conjunctions={sat.conjunctions} />
       )}
 
       {/* Next burn countdown */}
@@ -205,5 +210,112 @@ function MonoRow({ label, value, color }: { label: string; value: string; color?
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>{label}</span>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: color || 'var(--text-primary)', fontWeight: 500 }}>{value}</span>
     </div>
+  );
+}
+
+// ── Live proximity section ────────────────────────────────────────────────────
+
+function TcaCountdown({ tauSeconds }: { tauSeconds: number }) {
+  // Counts down from the tau value received from physics — updates every second
+  const [remaining, setRemaining] = useState(Math.max(0, tauSeconds));
+
+  useEffect(() => {
+    setRemaining(Math.max(0, tauSeconds));
+  }, [tauSeconds]);
+
+  useEffect(() => {
+    if (remaining <= 0) return;
+    const t = setInterval(() => setRemaining(r => Math.max(0, r - 1)), 1000);
+    return () => clearInterval(t);
+  }, [tauSeconds]); // reset timer when tau changes (new physics tick)
+
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+  const s = Math.floor(remaining % 60);
+  const fmt = (n: number) => String(n).padStart(2, '0');
+  const color = remaining < 300 ? 'var(--red)' : remaining < 900 ? 'var(--amber)' : 'var(--cyan)';
+
+  return (
+    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color, letterSpacing: 1 }}>
+      {fmt(h)}:{fmt(m)}:{fmt(s)}
+    </span>
+  );
+}
+
+function DistanceBar({ value, max }: { value: number; max: number }) {
+  const pct = Math.min(100, (value / max) * 100);
+  const color = value < 0.1 ? 'var(--red)' : value < 1.0 ? 'var(--amber)' : 'var(--green)';
+  return (
+    <div style={{ flex: 1, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
+      <div style={{
+        width: `${pct}%`, height: '100%', background: color,
+        borderRadius: 2, boxShadow: `0 0 6px ${color}`,
+        transition: 'width 0.4s, background 0.4s',
+      }} />
+    </div>
+  );
+}
+
+function ProximitySection({ conjunctions }: { conjunctions: ConjunctionInfo[] }) {
+  // Show top 3 closest threats
+  const top = conjunctions.slice(0, 3);
+
+  return (
+    <Section title="PROXIMITY ALERT">
+      {top.map((c, i) => {
+        const isViolation = c.is_violation;
+        const borderColor = isViolation ? 'var(--red)' : c.d_min_km < 1.0 ? 'var(--amber)' : 'rgba(0,212,255,0.3)';
+        const labelColor  = isViolation ? 'var(--red)' : c.d_min_km < 1.0 ? 'var(--amber)' : 'var(--cyan)';
+
+        return (
+          <div key={c.object_b_id + i} style={{
+            marginBottom: 10, padding: '8px 10px', borderRadius: 6,
+            background: isViolation ? 'rgba(255,59,59,0.07)' : 'rgba(0,212,255,0.04)',
+            border: `1px solid ${borderColor}`,
+          }}>
+            {/* Threat ID + violation badge */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: labelColor, fontWeight: 700 }}>
+                {isViolation ? '⚠ ' : '◈ '}{c.object_b_id}
+              </span>
+              {isViolation && (
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 8, letterSpacing: 1,
+                  padding: '1px 6px', borderRadius: 3,
+                  color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red)',
+                  animation: 'blink 1s infinite',
+                }}>VIOLATION</span>
+              )}
+            </div>
+
+            {/* Current separation + bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', minWidth: 28 }}>NOW</span>
+              <DistanceBar value={c.current_sep_km} max={500} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: labelColor, minWidth: 70, textAlign: 'right' }}>
+                {c.current_sep_km < 1 ? `${(c.current_sep_km * 1000).toFixed(0)} m` : `${c.current_sep_km.toFixed(1)} km`}
+              </span>
+            </div>
+
+            {/* Min separation at TCA */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', minWidth: 28 }}>TCA</span>
+              <DistanceBar value={c.d_min_km} max={500} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: isViolation ? 'var(--red)' : 'var(--amber)', minWidth: 70, textAlign: 'right' }}>
+                {c.d_min_km < 1 ? `${(c.d_min_km * 1000).toFixed(0)} m` : `${c.d_min_km.toFixed(1)} km`}
+              </span>
+            </div>
+
+            {/* TCA countdown */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', letterSpacing: 1 }}>
+                TIME TO CLOSEST APPROACH
+              </span>
+              <TcaCountdown tauSeconds={c.tau_seconds} />
+            </div>
+          </div>
+        );
+      })}
+    </Section>
   );
 }
