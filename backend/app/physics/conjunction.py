@@ -1,13 +1,15 @@
 """
-Conjunction detection — O(N log N) via scipy KDTree.
+Conjunction detection — O(N log N) via scipy KDTree with 100m collision threshold.
+
+Hackathon Specification:
+  Collision when |r_sat(t) - r_deb(t)| < 0.100 km (100 meters)
 
 Algorithm
 ---------
-1. Propagate all debris to T time steps over `horizon_seconds` (coarse grid).
-2. At each time step build a KDTree from debris positions.
-3. Query all satellite positions against the tree with radius = threshold_km.
-4. For each candidate pair, refine TCA with scipy.optimize.minimize_scalar (bounded).
-5. Flag miss_distance < CRITICAL_KM as CRITICAL in the CDM.
+1. Build KDTree from debris positions (O(N log N) nearest-neighbor search)
+2. Query satellite positions against tree with radius = threshold_km
+3. For each candidate pair, refine TCA with scipy.optimize.minimize_scalar (bounded)
+4. Flag miss_distance < 0.100 km as CRITICAL collision risk
 
 Units: km / km/s throughout.
 """
@@ -20,10 +22,12 @@ from typing import Any
 
 from physics.propagator import propagate_rk4, propagate_ivp
 
-COARSE_KM   = 5.0
-CRITICAL_KM = 0.1
-FINE_KM     = 5.0
-COARSE_STEP_S = 60.0
+# ── Hackathon Spec-Exact Thresholds ───────────────────────────────────────────
+COLLISION_THRESHOLD_KM = 0.100  # 100 meters - per hackathon specification
+COARSE_KM              = 5.0    # Initial screening radius for KDTree query
+CRITICAL_KM            = COLLISION_THRESHOLD_KM  # Alias for clarity
+FINE_KM                = 5.0    # Refinement threshold
+COARSE_STEP_S          = 60.0   # Time step for coarse grid
 
 
 def time_of_closest_approach(
@@ -150,6 +154,27 @@ def find_conjunctions(
     return results
 
 
+def check_collision(sat_state: list[float], deb_state: list[float]) -> bool:
+    """
+    Check if satellite and debris are currently colliding.
+    
+    Hackathon Spec: Collision when |r_sat - r_deb| < 0.100 km (100 meters)
+    
+    Args:
+        sat_state: [x, y, z, vx, vy, vz] in km and km/s
+        deb_state: [x, y, z, vx, vy, vz] in km and km/s
+    
+    Returns:
+        True if Euclidean distance < 0.100 km, False otherwise
+    """
+    sat_pos = np.array(sat_state[:3])
+    deb_pos = np.array(deb_state[:3])
+    
+    euclidean_distance = np.linalg.norm(sat_pos - deb_pos)
+    
+    return euclidean_distance < COLLISION_THRESHOLD_KM
+
+
 def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
     """
     Lightweight per-tick check. KDTree at current positions, TCA over 1 orbit.
@@ -161,7 +186,10 @@ def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
     positions = np.array([list(b["position"]) for b in bodies])
     ids       = [b["id"] for b in bodies]
 
+    # Build k-d tree from all objects (O(N log N))
     tree  = KDTree(positions)
+    
+    # Find all pairs within coarse threshold (O(N) query)
     pairs = tree.query_pairs(r=COARSE_KM)
 
     results = []
@@ -169,6 +197,24 @@ def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
         sat_state = list(bodies[i]["position"]) + list(bodies[i]["velocity"])
         deb_state = list(bodies[j]["position"]) + list(bodies[j]["velocity"])
 
+        # Check immediate collision first
+        if check_collision(sat_state, deb_state):
+            # Immediate collision! Distance < 100m
+            current_distance = np.linalg.norm(
+                np.array(bodies[i]["position"]) - np.array(bodies[j]["position"])
+            )
+            results.append({
+                "sat1":             ids[i],
+                "sat2":             ids[j],
+                "tca_seconds":      0.0,  # Happening now
+                "miss_distance_km": round(current_distance, 6),
+                "miss_distance_m":  round(current_distance * 1000.0, 1),
+                "severity":         "CRITICAL",
+                "collision_imminent": True,
+            })
+            continue
+
+        # Refine TCA for future conjunctions
         tca_s, miss_km = time_of_closest_approach(
             sat_state, deb_state, t0=0.0, max_seconds=3600.0
         )
@@ -183,6 +229,7 @@ def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
             "miss_distance_km": round(miss_km, 4),
             "miss_distance_m":  round(miss_km * 1000.0, 1),
             "severity":         "CRITICAL" if miss_km < CRITICAL_KM else "WARNING",
+            "collision_imminent": False,
         })
 
     results.sort(key=lambda x: x["miss_distance_km"])
