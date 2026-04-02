@@ -33,6 +33,16 @@ export interface CdmWarning {
   severity: 'WARNING' | 'CRITICAL';
 }
 
+interface AtlasObject {
+  id: string;
+  type: string;
+  r: { x: number; y: number; z: number };
+  v: { x: number; y: number; z: number };
+  status?: string;
+  fuel_kg?: number;
+  mass_kg?: number;
+}
+
 interface InitObject {
   id: string;
   object_type: 'satellite' | 'debris';
@@ -44,13 +54,29 @@ interface InitObject {
 }
 
 async function initBackend(satellites: Satellite[], debris: DebrisPoint[]): Promise<boolean> {
+  // First try to load existing objects from Atlas
+  try {
+    const res = await fetch(`${API}/api/telemetry/objects`);
+    if (res.ok) {
+      const data = await res.json() as {
+        satellites: AtlasObject[];
+        debris: AtlasObject[];
+      };
+      // If Atlas already has data, use it — don't overwrite
+      if (data.satellites.length > 0 || data.debris.length > 0) {
+        return true; // signal: use snapshot polling, Atlas is populated
+      }
+    }
+  } catch { /* fall through to seeding */ }
+
+  // Atlas is empty — seed with initial objects
   const objects: InitObject[] = [
     ...satellites.map(s => ({
       id: s.id,
       object_type: 'satellite' as const,
       position: s.pos,
       velocity: s.vel,
-      fuel_kg: s.fuel * 0.005,   // convert 0-100% → ~0-0.5 kg (CubeSat scale)
+      fuel_kg: s.fuel * 0.005,
       mass_kg: 4.0,
       status: s.status === 'critical' ? 'safe-hold' : s.status === 'warning' ? 'comms-loss' : 'nominal',
     })),

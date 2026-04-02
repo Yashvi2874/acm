@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 
 	"telemetry_ingestion/internal/repository"
@@ -12,23 +11,76 @@ import (
 )
 
 func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
-	// ── Existing telemetry endpoints ──────────────────────────────────────
-	r.POST("/telemetry/:satellite_id", func(c *gin.Context) {
-		satID := c.Param("satellite_id")
-		var data map[string]interface{}
-		if err := c.ShouldBindJSON(&data); err != nil {
+
+	// ── POST /log/telemetry — bulk ingest from Python (spec format) ───────
+	// Body: {"timestamp":"...","objects":[{"id":"...","type":"...","r":{...},"v":{...}}]}
+	r.POST("/log/telemetry", func(c *gin.Context) {
+		var body struct {
+			Timestamp string `json:"timestamp"`
+			Objects   []struct {
+				ID     string `json:"id"`
+				Type   string `json:"type"`
+				R      struct{ X, Y, Z float64 } `json:"r"`
+				V      struct{ X, Y, Z float64 } `json:"v"`
+				Status string  `json:"status"`
+				FuelKg float64 `json:"fuel_kg"`
+				MassKg float64 `json:"mass_kg"`
+			} `json:"objects"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		rec := repository.TelemetryRecord{
-			SatelliteID: satID,
-			Timestamp:   time.Now().UTC(),
-			Data:        data,
+
+		ts := time.Now().UTC()
+
+		for _, obj := range body.Objects {
+			// Upsert into satellites or debris collection
+			p.EnqueueObject(repository.SpaceObject{
+				ID:        obj.ID,
+				Type:      obj.Type,
+				R:         repository.Vec3{X: obj.R.X, Y: obj.R.Y, Z: obj.R.Z},
+				V:         repository.Vec3{X: obj.V.X, Y: obj.V.Y, Z: obj.V.Z},
+				Status:    obj.Status,
+				FuelKg:    obj.FuelKg,
+				MassKg:    obj.MassKg,
+				UpdatedAt: ts,
+			})
+
+			// Also log to raw telemetry collection
+			p.Enqueue(repository.TelemetryRecord{
+				SatelliteID: obj.ID,
+				Timestamp:   ts,
+				Data: map[string]interface{}{
+					"type": obj.Type,
+					"r":    map[string]float64{"x": obj.R.X, "y": obj.R.Y, "z": obj.R.Z},
+					"v":    map[string]float64{"x": obj.V.X, "y": obj.V.Y, "z": obj.V.Z},
+				},
+			})
 		}
-		p.Enqueue(rec)
-		c.JSON(http.StatusAccepted, gin.H{"status": "queued", "satellite_id": satID})
+		c.JSON(http.StatusAccepted, gin.H{"logged": "telemetry", "count": len(body.Objects)})
 	})
 
+	// ── GET /objects — return all satellites + debris from Atlas ──────────
+	r.GET("/objects", func(c *gin.Context) {
+		sats, debs, err := p.GetAllObjects()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if sats == nil {
+			sats = []repository.SpaceObject{}
+		}
+		if debs == nil {
+			debs = []repository.SpaceObject{}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"satellites": sats,
+			"debris":     debs,
+		})
+	})
+
+	// ── GET /telemetry/:id — latest raw telemetry log ─────────────────────
 	r.GET("/telemetry/:satellite_id", func(c *gin.Context) {
 		satID := c.Param("satellite_id")
 		rec, err := p.GetLatest(satID)
@@ -39,56 +91,7 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 		c.JSON(http.StatusOK, rec)
 	})
 
-	r.GET("/telemetry/:satellite_id/history", func(c *gin.Context) {
-		satID := c.Param("satellite_id")
-		limit := int64(100)
-		if l := c.Query("limit"); l != "" {
-			if parsed, err := strconv.ParseInt(l, 10, 64); err == nil {
-				limit = parsed
-			}
-		}
-		records, err := p.GetHistory(satID, limit)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"satellite_id": satID, "records": records})
-	})
-
-	// ── Snapshot (bulk telemetry from simulate/step) ──────────────────────
-	r.POST("/telemetry/snapshot", func(c *gin.Context) {
-		var body map[string]interface{}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		rec := repository.TelemetryRecord{
-			SatelliteID: "_snapshot",
-			Timestamp:   time.Now().UTC(),
-			Data:        body,
-		}
-		p.Enqueue(rec)
-		c.JSON(http.StatusAccepted, gin.H{"status": "queued"})
-	})
-
-	// ── Log endpoints (fire-and-forget from Python) ───────────────────────
-	// POST /log/telemetry  body: {timestamp, objects:[]}
-	r.POST("/log/telemetry", func(c *gin.Context) {
-		var body map[string]interface{}
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		rec := repository.TelemetryRecord{
-			SatelliteID: "_bulk",
-			Timestamp:   time.Now().UTC(),
-			Data:        body,
-		}
-		p.Enqueue(rec)
-		c.JSON(http.StatusAccepted, gin.H{"logged": "telemetry"})
-	})
-
-	// POST /log/maneuver  body: {satellite_id, burn_id, deltaV, fuel_remaining, timestamp}
+	// ── POST /log/maneuver ────────────────────────────────────────────────
 	r.POST("/log/maneuver", func(c *gin.Context) {
 		var body map[string]interface{}
 		if err := c.ShouldBindJSON(&body); err != nil {
@@ -99,44 +102,44 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 		if satID == "" {
 			satID = "_maneuver"
 		}
-		rec := repository.TelemetryRecord{
+		p.Enqueue(repository.TelemetryRecord{
 			SatelliteID: satID,
 			Timestamp:   time.Now().UTC(),
 			Data:        body,
-		}
-		p.Enqueue(rec)
+		})
 		c.JSON(http.StatusAccepted, gin.H{"logged": "maneuver"})
 	})
 
-	// POST /log/cdm  body: {sat_id, deb_id, tca, miss_distance}
+	// ── POST /log/cdm ─────────────────────────────────────────────────────
 	r.POST("/log/cdm", func(c *gin.Context) {
 		var body map[string]interface{}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		rec := repository.TelemetryRecord{
+		p.Enqueue(repository.TelemetryRecord{
 			SatelliteID: "_cdm",
 			Timestamp:   time.Now().UTC(),
 			Data:        body,
-		}
-		p.Enqueue(rec)
+		})
 		c.JSON(http.StatusAccepted, gin.H{"logged": "cdm"})
 	})
 
-	// POST /log/collision  body: {sat_id, deb_id, timestamp}
+	// ── POST /log/collision ───────────────────────────────────────────────
 	r.POST("/log/collision", func(c *gin.Context) {
 		var body map[string]interface{}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		rec := repository.TelemetryRecord{
+		p.Enqueue(repository.TelemetryRecord{
 			SatelliteID: "_collision",
 			Timestamp:   time.Now().UTC(),
 			Data:        body,
-		}
-		p.Enqueue(rec)
+		})
 		c.JSON(http.StatusAccepted, gin.H{"logged": "collision"})
 	})
+
+	// ── GET /health ───────────────────────────────────────────────────────
+	// (registered in main.go, kept here for reference)
 }

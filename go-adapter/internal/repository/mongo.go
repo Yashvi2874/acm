@@ -9,31 +9,98 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+// ── Shared types ──────────────────────────────────────────────────────────────
+
+type Vec3 struct {
+	X float64 `bson:"x" json:"x"`
+	Y float64 `bson:"y" json:"y"`
+	Z float64 `bson:"z" json:"z"`
+}
+
+// SpaceObject is the canonical document stored in satellites / debris collections.
+type SpaceObject struct {
+	ID        string    `bson:"_id"       json:"id"`
+	Type      string    `bson:"type"      json:"type"`
+	R         Vec3      `bson:"r"         json:"r"`
+	V         Vec3      `bson:"v"         json:"v"`
+	Status    string    `bson:"status"    json:"status,omitempty"`
+	FuelKg    float64   `bson:"fuel_kg"   json:"fuel_kg,omitempty"`
+	MassKg    float64   `bson:"mass_kg"   json:"mass_kg,omitempty"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// TelemetryRecord is the raw ingestion log (append-only).
 type TelemetryRecord struct {
 	SatelliteID string                 `bson:"satellite_id" json:"satellite_id"`
 	Timestamp   time.Time              `bson:"timestamp"    json:"timestamp"`
 	Data        map[string]interface{} `bson:"data"         json:"data"`
 }
 
+// ── Repository ────────────────────────────────────────────────────────────────
+
 type MongoRepository struct {
 	client     *mongo.Client
-	collection *mongo.Collection
+	telemetry  *mongo.Collection
+	satellites *mongo.Collection
+	debris     *mongo.Collection
 }
 
 func NewMongoRepository(ctx context.Context, uri, dbName, collName string) (*MongoRepository, error) {
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	opts := options.Client().ApplyURI(uri)
+	client, err := mongo.Connect(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 	if err := client.Ping(ctx, nil); err != nil {
 		return nil, err
 	}
-	col := client.Database(dbName).Collection(collName)
-	return &MongoRepository{client: client, collection: col}, nil
+	db := client.Database(dbName)
+	return &MongoRepository{
+		client:     client,
+		telemetry:  db.Collection(collName),
+		satellites: db.Collection("satellites"),
+		debris:     db.Collection("debris"),
+	}, nil
 }
 
+// UpsertObject upserts a SpaceObject into the correct collection by type.
+func (r *MongoRepository) UpsertObject(ctx context.Context, obj SpaceObject) error {
+	col := r.debris
+	if obj.Type == "SATELLITE" {
+		col = r.satellites
+	}
+	filter := bson.M{"_id": obj.ID}
+	update := bson.M{"$set": obj}
+	opts := options.Update().SetUpsert(true)
+	_, err := col.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+// GetAllObjects returns all satellites and debris from Atlas.
+func (r *MongoRepository) GetAllObjects(ctx context.Context) ([]SpaceObject, []SpaceObject, error) {
+	var sats, debs []SpaceObject
+
+	cur, err := r.satellites.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cur.All(ctx, &sats); err != nil {
+		return nil, nil, err
+	}
+
+	cur, err = r.debris.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := cur.All(ctx, &debs); err != nil {
+		return nil, nil, err
+	}
+	return sats, debs, nil
+}
+
+// Insert appends a raw telemetry log record.
 func (r *MongoRepository) Insert(ctx context.Context, rec TelemetryRecord) error {
-	_, err := r.collection.InsertOne(ctx, rec)
+	_, err := r.telemetry.InsertOne(ctx, rec)
 	return err
 }
 
@@ -41,7 +108,7 @@ func (r *MongoRepository) FindLatest(ctx context.Context, satelliteID string) (*
 	filter := bson.M{"satellite_id": satelliteID}
 	opts := options.FindOne().SetSort(bson.D{{Key: "timestamp", Value: -1}})
 	var rec TelemetryRecord
-	if err := r.collection.FindOne(ctx, filter, opts).Decode(&rec); err != nil {
+	if err := r.telemetry.FindOne(ctx, filter, opts).Decode(&rec); err != nil {
 		return nil, err
 	}
 	return &rec, nil
@@ -50,7 +117,7 @@ func (r *MongoRepository) FindLatest(ctx context.Context, satelliteID string) (*
 func (r *MongoRepository) FindAll(ctx context.Context, satelliteID string, limit int64) ([]TelemetryRecord, error) {
 	filter := bson.M{"satellite_id": satelliteID}
 	opts := options.Find().SetSort(bson.D{{Key: "timestamp", Value: -1}}).SetLimit(limit)
-	cursor, err := r.collection.Find(ctx, filter, opts)
+	cursor, err := r.telemetry.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
 	}

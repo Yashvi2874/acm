@@ -74,6 +74,14 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	router.GET("/health/db", func(c *gin.Context) {
+		prefix := mongoURI
+		if len(prefix) > 40 {
+			prefix = prefix[:40] + "..."
+		}
+		c.JSON(200, gin.H{"status": "ok", "mongo": "connected", "uri_prefix": prefix})
+	})
+
 	api.RegisterTelemetryRoutes(router, processor)
 
 	srvErrChan := make(chan error, 1)

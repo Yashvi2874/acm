@@ -445,3 +445,59 @@ async def get_snapshot():
             "debris":      debris_out,
             "cdm_warnings": cdm_out,
         }
+
+
+# ── /api/simulate/init ────────────────────────────────────────────────────────
+
+class InitObject(BaseModel):
+    id: str
+    object_type: str          # "satellite" | "debris"
+    position: list[float]     # ECI km
+    velocity: list[float]     # km/s
+    fuel_kg: float = 0.5
+    mass_kg: float = 4.0
+    status: str = "nominal"
+
+
+class InitRequest(BaseModel):
+    objects: list[InitObject]
+
+
+@router.post("/init", summary="Seed simulation state from frontend initial objects")
+async def init_simulation(req: InitRequest):
+    """
+    Called once by usePhysicsSimulation on mount.
+    Registers all satellites and debris into SimulationState.
+    """
+    from state_store import ScheduledBurn
+    async with simulation_state.lock:
+        # Clear existing state for a clean init
+        simulation_state.satellites.clear()
+        simulation_state.debris.clear()
+        simulation_state.maneuver_queue.clear()
+        simulation_state.cdm_warnings.clear()
+        simulation_state.trajectory_log.clear()
+
+        for obj in req.objects:
+            if obj.object_type == "satellite":
+                sat = simulation_state.get_or_create_satellite(obj.id)
+                sat.position = list(obj.position)
+                sat.velocity = list(obj.velocity)
+                sat.fuel_kg = obj.fuel_kg
+                sat.initial_fuel_kg = obj.fuel_kg
+                sat.mass_kg = obj.mass_kg
+                sat.status = obj.status  # type: ignore[assignment]
+                sat.nominal_slot = {
+                    "position": list(obj.position),
+                    "velocity": list(obj.velocity),
+                }
+            else:
+                simulation_state.get_or_create_debris(
+                    obj.id, list(obj.position), list(obj.velocity)
+                )
+
+    return {"ok": True, "satellites": len(simulation_state.satellites),
+            "debris": len(simulation_state.debris),
+            "initialized": len(req.objects)}
+
+

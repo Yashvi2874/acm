@@ -50,7 +50,7 @@ func LoadConfig(path string) (*Config, error) {
 
 func defaultConfig() *Config {
 	return &Config{
-		MongoURI:    "mongodb://mongodb:27017",
+		MongoURI:    "mongodb+srv://rajasekharp_db_user:vM4MT9yMtda7dCKj@nsh-test.klojnbb.mongodb.net/?appName=NSH-Test",
 		Database:    "cubesat",
 		Collection:  "telemetry",
 		Port:        "8080",

@@ -1,4 +1,4 @@
-mongo_uri: "mongodb://mongodb:27017"
+mongo_uri: "mongodb+srv://rajasekharp_db_user:vM4MT9yMtda7dCKj@nsh-test.klojnbb.mongodb.net/?appName=NSH-Test"
 database: "cubesat"
 collection: "telemetry"
 port: "8080"

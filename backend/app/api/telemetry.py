@@ -1,115 +1,181 @@
 """
-POST /api/telemetry  →  update_telemetry()
+POST /api/telemetry  — spec-exact bulk ingestion endpoint
 
-Merges incoming telemetry into SimulationState under the asyncio lock,
-then forwards to the Go adapter for persistence.
+Spec format:
+  {
+    "timestamp": "2026-03-12T08:00:00.000Z",
+    "objects": [
+      {"id": "DEB-99421", "type": "DEBRIS",
+       "r": {"x": 4500.2, "y": -2100.5, "z": 4800.1},
+       "v": {"x": -1.25,  "y": 6.84,    "z": 3.12}}
+    ]
+  }
 
-Units: positions km, velocities km/s, timestamps UTC ISO-8601.
+Response:
+  {"status": "ACK", "processed_count": 1, "active_cdm_warnings": 3}
 """
+from __future__ import annotations
+
+import asyncio
 import os
-import httpx
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
+
+import httpx
+from fastapi import APIRouter
+from pydantic import BaseModel
 
 from state_store import simulation_state
 
 router = APIRouter()
-
 GO_ADAPTER_URL = os.getenv("GO_ADAPTER_URL", "http://go-adapter:8080")
 
 
-class TelemetryPayload(BaseModel):
-    satellite_id: str
-    position: list[float] | None = None    # ECI km  [x, y, z]
-    velocity: list[float] | None = None    # ECI km/s [vx, vy, vz]
+# ── Spec-exact request models ─────────────────────────────────────────────────
+
+class Vec3(BaseModel):
+    x: float
+    y: float
+    z: float
+
+
+class TelemetryObject(BaseModel):
+    id: str
+    type: str          # "SATELLITE" | "DEBRIS"
+    r: Vec3            # position km
+    v: Vec3            # velocity km/s
     mass_kg: float | None = None
     fuel_kg: float | None = None
     status: str | None = None
-    timestamp: datetime | None = None      # UTC; defaults to now
-    data: dict = {}                        # arbitrary sensor readings
-
-    @field_validator("position", "velocity")
-    @classmethod
-    def must_be_3(cls, v):
-        if v is not None and len(v) != 3:
-            raise ValueError("must have exactly 3 components")
-        return v
 
 
-@router.post("", summary="Ingest telemetry and update simulation state")
-async def update_telemetry(payload: TelemetryPayload):
-    ts = payload.timestamp or datetime.now(timezone.utc)
+class TelemetryBatch(BaseModel):
+    timestamp: datetime
+    objects: list[TelemetryObject]
+
+
+# ── Main endpoint ─────────────────────────────────────────────────────────────
+
+@router.post("", summary="Bulk telemetry ingestion — spec-exact format")
+async def ingest_telemetry(batch: TelemetryBatch):
+    ts = batch.timestamp.replace(tzinfo=timezone.utc) if batch.timestamp.tzinfo is None \
+         else batch.timestamp
 
     async with simulation_state.lock:
-        sat = simulation_state.get_or_create_satellite(payload.satellite_id)
+        for obj in batch.objects:
+            pos = [obj.r.x, obj.r.y, obj.r.z]
+            vel = [obj.v.x, obj.v.y, obj.v.z]
 
-        if payload.position is not None:
-            sat.position = payload.position
-        if payload.velocity is not None:
-            sat.velocity = payload.velocity
-        if payload.mass_kg is not None:
-            sat.mass_kg = payload.mass_kg
-        if payload.fuel_kg is not None:
-            sat.fuel_kg = payload.fuel_kg
-        if payload.status is not None:
-            sat.status = payload.status  # type: ignore[assignment]
+            if obj.type.upper() == "DEBRIS":
+                deb = simulation_state.get_or_create_debris(obj.id, pos, vel)
+                deb.position = pos
+                deb.velocity = vel
+                deb.last_updated = ts
+            else:
+                # SATELLITE or any other controllable object
+                sat = simulation_state.get_or_create_satellite(obj.id)
+                sat.position = pos
+                sat.velocity = vel
+                if obj.mass_kg is not None:
+                    sat.mass_kg = obj.mass_kg
+                if obj.fuel_kg is not None:
+                    sat.fuel_kg = obj.fuel_kg
+                    sat.initial_fuel_kg = max(sat.initial_fuel_kg, obj.fuel_kg)
+                if obj.status is not None:
+                    sat.status = obj.status  # type: ignore[assignment]
+                sat.last_updated = ts
 
-        sat.last_telemetry = payload.data
-        sat.last_updated = ts
-
-        # Advance sim clock to latest telemetry if it's ahead
+        # Advance sim clock
         if ts > simulation_state.sim_time:
             simulation_state.sim_time = ts
 
-    # Persist to Go adapter — non-fatal if unreachable
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{GO_ADAPTER_URL}/telemetry/{payload.satellite_id}",
-                json={
-                    "position": payload.position,
-                    "velocity": payload.velocity,
-                    "timestamp": ts.isoformat(),
-                    **payload.data,
-                },
-                timeout=3.0,
-            )
-    except httpx.RequestError:
-        pass
+        active_cdm = len(simulation_state.active_cdm_warnings)
+
+    # Fire-and-forget persist to Go adapter
+    asyncio.create_task(_persist_batch(ts, batch.objects))
 
     return {
-        "satellite_id": payload.satellite_id,
-        "sim_time": simulation_state.sim_time.isoformat(),
-        "accepted": True,
+        "status": "ACK",
+        "processed_count": len(batch.objects),
+        "active_cdm_warnings": active_cdm,
     }
 
 
-@router.get("/{satellite_id}", summary="Get latest telemetry from Go adapter")
-async def get_telemetry(satellite_id: str):
+async def _persist_batch(ts: datetime, objects: list[TelemetryObject]) -> None:
+    payload = {
+        "timestamp": ts.isoformat(),
+        "objects": [
+            {
+                "id": o.id,
+                "type": o.type,
+                "r": {"x": o.r.x, "y": o.r.y, "z": o.r.z},
+                "v": {"x": o.v.x, "y": o.v.y, "z": o.v.z},
+            }
+            for o in objects
+        ],
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{GO_ADAPTER_URL}/log/telemetry",
+                json=payload,
+                timeout=3.0,
+            )
+    except Exception:
+        pass
+
+
+# ── GET endpoints (read from Go adapter / Atlas) ──────────────────────────────
+
+@router.get("/objects", summary="Get all current objects from Atlas")
+async def get_all_objects():
+    """Returns latest state of all satellites and debris from Atlas."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{GO_ADAPTER_URL}/objects", timeout=5.0)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.RequestError:
+            # Fallback: return in-memory state
+            async with simulation_state.lock:
+                return {
+                    "satellites": [
+                        {"id": sid, "type": "SATELLITE",
+                         "r": {"x": s.position[0], "y": s.position[1], "z": s.position[2]},
+                         "v": {"x": s.velocity[0], "y": s.velocity[1], "z": s.velocity[2]},
+                         "status": s.status, "fuel_kg": s.fuel_kg}
+                        for sid, s in simulation_state.satellites.items()
+                    ],
+                    "debris": [
+                        {"id": did, "type": "DEBRIS",
+                         "r": {"x": d.position[0], "y": d.position[1], "z": d.position[2]},
+                         "v": {"x": d.velocity[0], "y": d.velocity[1], "z": d.velocity[2]}}
+                        for did, d in simulation_state.debris.items()
+                    ],
+                }
+
+
+@router.get("/{object_id}", summary="Get latest telemetry for one object")
+async def get_object_telemetry(object_id: str):
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(
-                f"{GO_ADAPTER_URL}/telemetry/{satellite_id}", timeout=5.0
+                f"{GO_ADAPTER_URL}/telemetry/{object_id}", timeout=5.0
             )
             resp.raise_for_status()
             return resp.json()
-        except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=e.response.status_code, detail="Telemetry not found")
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"Go adapter unreachable: {e}")
-
-
-@router.get("/{satellite_id}/history", summary="Get telemetry history from Go adapter")
-async def get_telemetry_history(satellite_id: str, limit: int = 100):
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(
-                f"{GO_ADAPTER_URL}/telemetry/{satellite_id}/history",
-                params={"limit": limit},
-                timeout=5.0,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"Go adapter unreachable: {e}")
+        except httpx.RequestError:
+            pass
+    # Fallback to in-memory
+    async with simulation_state.lock:
+        if object_id in simulation_state.satellites:
+            s = simulation_state.satellites[object_id]
+            return {"id": object_id, "type": "SATELLITE",
+                    "r": {"x": s.position[0], "y": s.position[1], "z": s.position[2]},
+                    "v": {"x": s.velocity[0], "y": s.velocity[1], "z": s.velocity[2]}}
+        if object_id in simulation_state.debris:
+            d = simulation_state.debris[object_id]
+            return {"id": object_id, "type": "DEBRIS",
+                    "r": {"x": d.position[0], "y": d.position[1], "z": d.position[2]},
+                    "v": {"x": d.velocity[0], "y": d.velocity[1], "z": d.velocity[2]}}
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail=f"{object_id} not found")

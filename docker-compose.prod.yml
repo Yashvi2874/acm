@@ -3,7 +3,7 @@ version: "3.9"
 services:
 
   go-adapter:
-    build: ./go-adapter
+    image: YOURUSERNAME/go-adapter:latest
     expose:
       - "8080"
     environment:
@@ -16,7 +16,7 @@ services:
       start_period: 20s
 
   acm-backend:
-    build: ./backend
+    image: YOURUSERNAME/acm-backend:latest
     ports:
       - "8000:8000"
     depends_on:
@@ -32,7 +32,7 @@ services:
       start_period: 30s
 
   frontend:
-    build: ./frontend
+    image: YOURUSERNAME/acm-frontend:latest
     ports:
       - "3000:80"
     depends_on:
