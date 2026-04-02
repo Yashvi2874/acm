@@ -34,7 +34,6 @@ export default function App() {
   const [flaringId, setFlaringId] = useState<string | null>(null);
   const [useMock, setUseMock] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
-  const [collisionAlerts, setCollisionAlerts] = useState<{ satId: string; debIdx: number; dist: number }[]>([]);
   const autoManeuveredRef = useRef<Set<string>>(new Set()); // prevent re-triggering
   const timeRef = useRef(0);
   const hoveredIdRef = useRef<string | null>(null);
@@ -141,7 +140,6 @@ export default function App() {
         }, 5000);
       }
     });
-    setCollisionAlerts(alerts);
   }, [tick]);
 
   const handleHover = useCallback((id: string | null, x: number, y: number) => {    hoveredIdRef.current = id;
@@ -272,7 +270,6 @@ export default function App() {
             hoveredId={hoveredId}
             maneuverPlan={maneuverModal ? maneuverPlan : null}
             flaringId={flaringId}
-            collisionAlerts={collisionAlerts}
             onSelect={setSelectedId}
             onHover={handleHover}
             tick={tick}

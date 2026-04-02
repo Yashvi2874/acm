@@ -28,6 +28,7 @@ export interface Satellite {
   lastManeuver?: string;
   autoManeuvering?: boolean;   // currently executing auto-avoidance
   threatDebrisIdx?: number;    // index of threatening debris piece
+  conjunctions?: ConjunctionInfo[]; // nearby objects for proximity display
 }
 
 export interface DebrisPoint {
