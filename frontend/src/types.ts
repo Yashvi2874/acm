@@ -6,7 +6,7 @@ export interface Satellite {
   id: string;
   name: string;
   status: SatelliteStatus;
-  fuel: number; // 0-100
+  fuel: number;
   pos: [number, number, number]; // ECI km
   vel: [number, number, number]; // km/s
   orbitRadius: number; // km from Earth center
@@ -15,7 +15,9 @@ export interface Satellite {
   orbitSpeed: number; // rad/s
   collisionRisk: boolean;
   riskTarget?: string;
-  lastManeuver?: string; // maneuver id applied
+  lastManeuver?: string;
+  autoManeuvering?: boolean;   // currently executing auto-avoidance
+  threatDebrisIdx?: number;    // index of threatening debris piece
 }
 
 export interface DebrisPoint {

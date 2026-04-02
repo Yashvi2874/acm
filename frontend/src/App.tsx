@@ -3,8 +3,7 @@ import TopBar from './components/TopBar';
 import SatelliteList from './components/SatelliteList';
 import GlobeScene from './components/GlobeScene';
 import DetailPanel from './components/DetailPanel';
-import Timeline from './components/Timeline';
-import Tooltip from './components/Tooltip';
+import ManeuverTimeline from './components/ManeuverTimeline';import Tooltip from './components/Tooltip';
 import ManeuverModal from './components/ManeuverModal';
 import { generateSatellites, generateDebris, generateManeuvers } from './mockData';
 import { usePhysicsSimulation } from './usePhysicsSimulation';
@@ -34,6 +33,9 @@ export default function App() {
   const [maneuverPlan, setManeuverPlan] = useState<ManeuverPlan | null>(null);
   const [flaringId, setFlaringId] = useState<string | null>(null);
   const [useMock, setUseMock] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [collisionAlerts, setCollisionAlerts] = useState<{ satId: string; debIdx: number; dist: number }[]>([]);
+  const autoManeuveredRef = useRef<Set<string>>(new Set()); // prevent re-triggering
   const timeRef = useRef(0);
   const hoveredIdRef = useRef<string | null>(null);
 
@@ -82,8 +84,67 @@ export default function App() {
 
   const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
-  const handleHover = useCallback((id: string | null, x: number, y: number) => {
-    hoveredIdRef.current = id;
+  // ── Collision detection + auto-avoidance ─────────────────────────────
+  const WARN_DIST = 180;   // km — show warning
+  const AVOID_DIST = 80;   // km — trigger auto-maneuver
+
+  useEffect(() => {
+    const alerts: { satId: string; debIdx: number; dist: number }[] = [];
+    satellites.forEach(sat => {
+      if (sat.autoManeuvering) return;
+      let closest = { dist: Infinity, idx: -1 };
+      debris.forEach((d, idx) => {
+        const dx = sat.pos[0] - d.x, dy = sat.pos[1] - d.y, dz = sat.pos[2] - d.z;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist < closest.dist) closest = { dist, idx };
+      });
+
+      if (closest.dist < WARN_DIST) {
+        alerts.push({ satId: sat.id, debIdx: closest.idx, dist: closest.dist });
+        setSatellites(prev => prev.map(s =>
+          s.id === sat.id ? { ...s, collisionRisk: true, threatDebrisIdx: closest.idx } : s
+        ));
+      } else {
+        setSatellites(prev => prev.map(s =>
+          s.id === sat.id && s.collisionRisk && !s.autoManeuvering
+            ? { ...s, collisionRisk: false, threatDebrisIdx: undefined } : s
+        ));
+      }
+
+      // Auto-avoidance burn
+      if (closest.dist < AVOID_DIST && !autoManeuveredRef.current.has(sat.id)) {
+        autoManeuveredRef.current.add(sat.id);
+        const mnvId = `AUTO-${sat.id}-${Date.now()}`;
+        const deltaV = 0.3 + Math.random() * 0.2;
+        const fuelCost = Math.round(deltaV * 20);
+        setSatellites(prev => prev.map(s => {
+          if (s.id !== sat.id) return s;
+          const newRadius = s.orbitRadius + deltaV * 200;
+          const newFuel = Math.max(0, s.fuel - fuelCost);
+          return {
+            ...s, orbitRadius: newRadius, fuel: newFuel, collisionRisk: false,
+            status: newFuel < 20 ? 'critical' : newFuel < 50 ? 'warning' : 'nominal',
+            autoManeuvering: true, lastManeuver: mnvId, threatDebrisIdx: undefined,
+          };
+        }));
+        setManeuvers(prev => [...prev, {
+          id: mnvId, satelliteId: sat.id, type: 'avoidance',
+          startHour: 0, durationHours: 0.1, deltaV, executed: true,
+        }]);
+        setFlaringId(sat.id);
+        setTimeout(() => setFlaringId(null), 3000);
+        setTimeout(() => {
+          setSatellites(prev => prev.map(s =>
+            s.id === sat.id ? { ...s, autoManeuvering: false } : s
+          ));
+          autoManeuveredRef.current.delete(sat.id);
+        }, 5000);
+      }
+    });
+    setCollisionAlerts(alerts);
+  }, [tick]);
+
+  const handleHover = useCallback((id: string | null, x: number, y: number) => {    hoveredIdRef.current = id;
     setHoveredId(id);
     setTooltip({ sat: id ? satellites.find(s => s.id === id) ?? null : null, x, y });
   }, [satellites]);
@@ -173,8 +234,22 @@ export default function App() {
       <TopBar satellites={satellites} />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
-        <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
-
+        {/* Left panel */}
+        <div style={{ width: 260, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-panel)', backdropFilter: 'blur(12px)' }}>
+          <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
+          {/* Timeline button at bottom of list */}
+          <div style={{ padding: '10px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+            <button onClick={() => setShowTimeline(true)} style={{
+              width: '100%', padding: '9px', borderRadius: 6, fontSize: 10,
+              fontFamily: 'var(--font-mono)', letterSpacing: 1, fontWeight: 700,
+              border: '1px solid var(--border)', color: 'var(--cyan)',
+              background: 'var(--cyan-dim)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}>
+              📅 MANEUVER TIMELINE
+            </button>
+          </div>
+        </div>
         {/* Center globe */}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           {/* Scanline overlay */}
@@ -197,6 +272,7 @@ export default function App() {
             hoveredId={hoveredId}
             maneuverPlan={maneuverModal ? maneuverPlan : null}
             flaringId={flaringId}
+            collisionAlerts={collisionAlerts}
             onSelect={setSelectedId}
             onHover={handleHover}
             tick={tick}
@@ -240,7 +316,6 @@ export default function App() {
         />
       </div>
 
-      <Timeline maneuvers={maneuvers} />
       <Tooltip satellite={tooltip.sat} x={tooltip.x} y={tooltip.y} />
 
       {maneuverModal && selectedSat && (
@@ -248,6 +323,14 @@ export default function App() {
           satellite={selectedSat}
           onConfirm={handleConfirmManeuver}
           onCancel={() => { setManeuverModal(false); setManeuverPlan(null); }}
+        />
+      )}
+
+      {showTimeline && (
+        <ManeuverTimeline
+          maneuvers={maneuvers}
+          satellites={satellites}
+          onClose={() => setShowTimeline(false)}
         />
       )}
     </div>
