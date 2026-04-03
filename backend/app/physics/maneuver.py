@@ -439,6 +439,43 @@ if __name__ == "__main__":
     except BurnLimitExceeded as e:
         print(f"\nValidator OK — BurnLimitExceeded raised as expected: {e}")
 
+    # ── Prompt 4 sanity test — multi-burn sequence ────────────────────────────
+    print("\n── Multi-burn sequence sanity test ──")
+    r      = 7000.0
+    mu     = 398600.4418
+    v      = np.sqrt(mu / r)
+    state_mb = np.array([r, 0, 0, 0, v, 0])
+
+    # Large velocity change → must split (50 m/s > 15 m/s cap)
+    v_target_mb = np.array([0, v + 0.05, 0])
+
+    result_mb = generate_maneuver_sequence(state_mb, v_target_mb)
+
+    print("Total ΔV:", result_mb["total_dV"])
+    print("Number of burns:", result_mb["num_burns"])
+    for i, b in enumerate(result_mb["burns"]):
+        print(f"Burn {i+1}: {b['magnitude']*1000:.2f} m/s")
+
+    assert result_mb["num_burns"] > 1, "Expected multiple burns for 50 m/s change"
+    assert all(b["magnitude"] <= 0.015 + 1e-12 for b in result_mb["burns"]), \
+        "A burn exceeded the 0.015 km/s cap"
+    print("Multi-burn sanity test passed ✓")
+
+    # ── compute_target_velocity_circular sanity test ──────────────────────────
+    print("\n── compute_target_velocity_circular sanity test ──")
+    r_circ   = 7000.0
+    state_eq = np.array([r_circ, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    res_circ = compute_target_velocity_circular(
+        state_eq, r_target=r_circ, inclination=0.0, raan=0.0
+    )
+    print(f"v_target: {res_circ['v_target'].round(6)}")
+    print(f"Expected direction: +Y axis")
+    assert np.allclose(res_circ['v_target'],
+                       np.array([0.0, np.sqrt(MU / r_circ), 0.0]),
+                       atol=1e-6), "equatorial sanity failed"
+    print("compute_target_velocity_circular sanity test passed ✓")
+
 
 # ── Plane change functions (Prompts 1–4) ──────────────────────────────────────
 # All four functions use math (stdlib) for scalar trig — no numpy.
@@ -637,4 +674,233 @@ def plane_change_nodes(a1, a2, a3, b1, b2, b3):
     return {
         "node1": (lat1, lon1),
         "node2": (lat2, lon2),
+    }
+
+# ── Velocity vector method + burn splitting (Prompts 1–4) ────────────────────
+
+
+def compute_delta_v_vector(state: np.ndarray, v_target: np.ndarray) -> dict:
+    """
+    Compute the ΔV vector required to reach a target velocity from the
+    current state using the velocity vector method.
+
+    This is a pure physics computation.
+    No burn limits enforced here.
+    No scheduling or splitting.
+
+    Args:
+        state    : (6,) array [x, y, z, vx, vy, vz] in ECI (km, km/s)
+        v_target : (3,) array target velocity in ECI (km/s)
+
+    Returns:
+        {
+            "method":    "velocity_vector_core",
+            "v_current": np.array,  # current velocity, km/s
+            "v_target":  np.array,  # target velocity, km/s
+            "dV":        float,     # delta-V magnitude, km/s
+            "dV_rtn":    np.array,  # delta-V in RTN frame, km/s
+            "dV_eci":    np.array,  # delta-V in ECI frame, km/s
+        }
+    """
+    # Step 1 — extract current velocity
+    v_current = state[3:]
+
+    # Step 2 — compute ΔV in ECI
+    dV_eci = v_target - v_current
+    dV     = np.linalg.norm(dV_eci)
+
+    # Step 3 — convert ECI → RTN by projecting onto RTN basis vectors
+    R_hat, T_hat, N_hat = build_rtn_frame(state)
+    dV_R = np.dot(dV_eci, R_hat)
+    dV_T = np.dot(dV_eci, T_hat)
+    dV_N = np.dot(dV_eci, N_hat)
+    dV_rtn = np.array([dV_R, dV_T, dV_N])
+
+    # Step 4 — return (no validation)
+    return {
+        "method":    "velocity_vector_core",
+        "v_current": v_current,
+        "v_target":  v_target,
+        "dV":        float(dV),
+        "dV_rtn":    dV_rtn,
+        "dV_eci":    dV_eci,
+    }
+
+
+def split_delta_v(dV_eci: np.ndarray, max_dv: float = 0.015) -> list:
+    """
+    Split a ΔV vector into multiple burns, each within the propulsion limit.
+
+    Burns are applied sequentially.
+    Each burn is along the SAME direction (impulsive approximation).
+    Time scheduling is handled separately.
+
+    Args:
+        dV_eci  : (3,) array — total delta-V vector in ECI (km/s)
+        max_dv  : float — per-burn magnitude cap, km/s (default 0.015)
+
+    Returns:
+        list of (3,) arrays — each a burn vector in ECI (km/s),
+        all pointing in the same direction, magnitudes <= max_dv.
+    """
+    # Step 1 — total magnitude
+    dV_total = np.linalg.norm(dV_eci)
+
+    # Step 2 — within limit: single burn, no splitting needed
+    if dV_total <= max_dv:
+        return [dV_eci]
+
+    # Step 3 — number of burns required
+    n_burns = int(np.ceil(dV_total / max_dv))
+
+    # Step 4 — unit direction vector
+    direction = dV_eci / dV_total
+
+    # Step 5 — build burn list
+    burns = []
+    for i in range(n_burns):
+        if i < n_burns - 1:
+            dv_mag = max_dv
+        else:
+            dv_mag = dV_total - max_dv * (n_burns - 1)   # remainder burn
+        burns.append(direction * dv_mag)
+
+    # Step 6 — return
+    return burns
+
+
+def generate_maneuver_sequence(state: np.ndarray, v_target: np.ndarray) -> dict:
+    """
+    Generate a complete, executable maneuver sequence to reach a target velocity.
+
+    Combines velocity vector method, burn splitting, and RTN conversion
+    into a single ready-to-schedule output.
+
+    Each burn satisfies ΔV ≤ 0.015 km/s.
+    Burns are applied sequentially with cooldown (handled elsewhere).
+    RTN used for interpretation, ECI for execution.
+
+    Args:
+        state    : (6,) array [x, y, z, vx, vy, vz] in ECI (km, km/s)
+        v_target : (3,) array target velocity in ECI (km/s)
+
+    Returns:
+        {
+            "method":    "velocity_vector_sequence",
+            "total_dV":  float,        # total delta-V magnitude, km/s
+            "num_burns": int,          # number of burns in sequence
+            "burns":     list of {
+                "dV_eci":    np.array, # burn vector in ECI, km/s
+                "dV_rtn":    np.array, # burn vector in RTN, km/s
+                "magnitude": float,    # burn magnitude, km/s
+            }
+        }
+    """
+    # Step 1 — compute core ΔV
+    result  = compute_delta_v_vector(state, v_target)
+    dV_eci  = result["dV_eci"]
+
+    # Step 2 — split into cap-compliant burns
+    burns_eci = split_delta_v(dV_eci)
+
+    # Step 3 — convert each burn to RTN for interpretation
+    R_hat, T_hat, N_hat = build_rtn_frame(state)
+    burns = []
+    for dv in burns_eci:
+        dV_R = np.dot(dv, R_hat)
+        dV_T = np.dot(dv, T_hat)
+        dV_N = np.dot(dv, N_hat)
+        burns.append({
+            "dV_eci":    dv,
+            "dV_rtn":    np.array([dV_R, dV_T, dV_N]),
+            "magnitude": float(np.linalg.norm(dv)),
+        })
+
+    # Step 4 — return
+    return {
+        "method":    "velocity_vector_sequence",
+        "total_dV":  result["dV"],
+        "num_burns": len(burns),
+        "burns":     burns,
+    }
+
+
+# ── Target velocity from orbital elements ─────────────────────────────────────
+
+def compute_target_velocity_circular(
+    state: np.ndarray,
+    r_target: float,
+    inclination: float,
+    raan: float,
+) -> dict:
+    """
+    Compute the velocity vector required to stay in a circular orbit
+    defined by (r, inclination, RAAN) at the current position.
+
+    The velocity is perpendicular to the radius vector and lies in the orbital plane.
+    The orbital plane is defined by the angular momentum unit vector h_hat.
+
+    This function enables full 3D maneuver computation when combined with:
+    ΔV = v_target - v_current
+
+    This assumes circular orbit.
+    For elliptical orbits, velocity depends on true anomaly.
+    That will be implemented in a future extension.
+
+    Args:
+        state       : (6,) array [x, y, z, vx, vy, vz] in ECI (km, km/s)
+        r_target    : desired orbital radius, km
+        inclination : orbital inclination, radians
+        raan        : right ascension of ascending node, radians
+
+    Returns:
+        {
+            "method":      "target_velocity_circular",
+            "r_target":    float,
+            "inclination": float,
+            "raan":        float,
+            "v_target":    np.array,  # target velocity vector in ECI, km/s
+            "v_mag":       float,     # circular speed at r_target, km/s
+            "h_hat":       np.array,  # orbital plane normal unit vector
+        }
+
+    Raises:
+        ValueError: if current position does not lie on the target orbit radius
+    """
+    # Step 1 — extract position vector
+    r_vec  = state[:3]
+    r_norm = np.linalg.norm(r_vec)
+
+    if not np.isclose(r_norm, r_target, atol=1e-3):
+        raise ValueError(
+            "Position must lie on target orbit for circular velocity computation"
+        )
+
+    # Step 2 — circular speed at r_target
+    v_mag = np.sqrt(MU / r_target)
+
+    # Step 3 — orbital plane normal vector from orbital elements
+    # h_hat is the unit angular momentum vector defining the orbital plane
+    h_hat = np.array([
+         np.sin(inclination) * np.sin(raan),
+        -np.sin(inclination) * np.cos(raan),
+         np.cos(inclination),
+    ])
+
+    # Step 4 — velocity direction: perpendicular to radius, in orbital plane
+    v_dir = np.cross(h_hat, r_vec)
+    v_dir = v_dir / np.linalg.norm(v_dir)
+
+    # Step 5 — final velocity vector
+    v_target = v_mag * v_dir
+
+    # Step 6 — return
+    return {
+        "method":      "target_velocity_circular",
+        "r_target":    float(r_target),
+        "inclination": float(inclination),
+        "raan":        float(raan),
+        "v_target":    v_target,
+        "v_mag":       float(v_mag),
+        "h_hat":       h_hat,
     }
