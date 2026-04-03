@@ -7,24 +7,22 @@ import json
 import urllib.request
 
 def clear_database(api_url: str):
-    """Clear via upserting empty batch (workaround until admin endpoint deployed)"""
-    # First, let's just overwrite by seeding fresh data
-    print(f"Attempting to clear via direct MongoDB access...")
+    """Clear database collections via Go adapter"""
+    print(f"Attempting to clear database via Go adapter...")
     
-    # Try the admin endpoint first
+    # Use the Go adapter's clear endpoint
     try:
         req = urllib.request.Request(
-            f"{api_url}/api/admin/clear",
+            "http://localhost:8080/clear",
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
-            print(f"✅ Cleared via admin endpoint: {result}")
+            print(f"✅ Database cleared successfully: {result}")
             return True
     except Exception as e:
-        print(f"⚠️  Admin endpoint not available ({e})")
-        print("   Will use workaround method...")
+        print(f"❌ Failed to clear database: {e}")
         return False
 
 def main():
@@ -44,10 +42,10 @@ def main():
     else:
         print("\n⚠️  Could not clear database automatically.")
         print("\nManual workaround:")
-        print("1. Connect to MongoDB Atlas UI")
-        print("2. Navigate to nsh_debris database")
+        print("1. Connect to MongoDB")
+        print("2. Navigate to acm_db database")
         print("3. Drop 'satellites' and 'debris' collections")
-        print("4. Run: python seed_clean_database.py --api http://localhost:8000")
+        print("4. Run: python seed_satellites.py")
         print("\nOR just run seed_clean_database.py - it will overwrite existing data.")
 
 if __name__ == "__main__":

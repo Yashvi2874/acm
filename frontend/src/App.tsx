@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import TopBar from './components/TopBar';
 import SatelliteList from './components/SatelliteList';
 import GlobeScene from './components/GlobeScene';
@@ -11,12 +11,12 @@ import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan } fr
 const INITIAL_SATS: Satellite[] = [];
 const INITIAL_DEBRIS: DebrisPoint[] = [];
 const GROUND_STATIONS: GroundStation[] = [
-  { id: 'GS-001', name: 'ISTRAC_Bengaluru', lat: 13.0333, lon: 77.5167, altitudeKm: 1.0, min_angle_deg: 10 },
-  { id: 'GS-002', name: 'Svalbard_Sat_Station', lat: 78.2297, lon: 15.4077, altitudeKm: 0.2, min_angle_deg: 15 },
-  { id: 'GS-003', name: 'Goldstone_Tracking', lat: 35.4266, lon: -116.89, altitudeKm: 1.0, min_angle_deg: 12 },
-  { id: 'GS-004', name: 'Punta_Arenas', lat: -53.15, lon: -70.9167, altitudeKm: 0.3, min_angle_deg: 12 },
-  { id: 'GS-005', name: 'IIT_Delhi_Ground_Node', lat: 28.545, lon: 77.1926, altitudeKm: 0.5, min_angle_deg: 8 },
-  { id: 'GS-006', name: 'McMurdo_Station', lat: -77.8463, lon: 166.6682, altitudeKm: 0.1, min_angle_deg: 18 },
+  { id: 'GS-001', name: 'ISTRAC_Bengaluru', lat: 13.0333, lon: 77.5167 },
+  { id: 'GS-002', name: 'Svalbard_Sat_Station', lat: 78.2297, lon: 15.4077 },
+  { id: 'GS-003', name: 'Goldstone_Tracking', lat: 35.4266, lon: -116.89 },
+  { id: 'GS-004', name: 'Punta_Arenas', lat: -53.15, lon: -70.9167 },
+  { id: 'GS-005', name: 'IIT_Delhi_Ground_Node', lat: 28.545, lon: 77.1926 },
+  { id: 'GS-006', name: 'McMurdo_Station', lat: -77.8463, lon: 166.6682 },
 ];
 
 export default function App() {
@@ -24,7 +24,6 @@ export default function App() {
   const [debris, setDebris] = useState<DebrisPoint[]>(INITIAL_DEBRIS);
   const [simTime, setSimTime] = useState<string>(new Date().toISOString());
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedType, setSelectedType] = useState<'satellite' | 'station' | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [tooltip, setTooltip] = useState<{ sat: Satellite | null; x: number; y: number }>({ sat: null, x: 0, y: 0 });
@@ -34,8 +33,12 @@ export default function App() {
   const [flaringId, setFlaringId] = useState<string | null>(null);
   const [useMock] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  const autoManeuveredRef = useRef<Set<string>>(new Set()); // prevent re-triggering
+  
   const hoveredIdRef = useRef<string | null>(null);
-  // Physics backend integration — seeds state and polls step+snapshot (includes maneuver trajectories)
+  const refreshIntervalRef = useRef<number | null>(null);
+
+  // Physics backend integration — seeds state and polls step+snapshot
   usePhysicsSimulation({
     initialSatellites: [],
     initialDebris: [],
@@ -51,55 +54,95 @@ export default function App() {
     },
   });
 
-  const selectedSat = selectedType === 'satellite' ? satellites.find(s => s.id === selectedId) ?? null : null;
-  const selectedStation = selectedType === 'station' ? GROUND_STATIONS.find(gs => gs.id === selectedId) ?? null : null;
+  // Auto-refresh data from database every 2 seconds for smooth visualization
+  // The backend propagates positions every 60 seconds using RK4+J2
+  // Frontend fetches every 2 seconds to display smooth motion
+  useEffect(() => {
+    const refreshData = async () => {
+      try {
+        const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/visualization/snapshot`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.satellites && data.debris_cloud) {
+            console.log(`✓ Fetched updated data: ${data.satellites.length} satellites, ${data.debris_cloud.length} debris`);
+            
+            // Transform backend format to frontend Satellite interface
+            const MU = 398600.4418;
+            const transformedSats = data.satellites.map((sat: any) => {
+              const pos = sat.eci_km as [number, number, number];
+              const vel = sat.eci_vel_kms as [number, number, number];
+              const r = Math.sqrt(pos[0]**2 + pos[1]**2 + pos[2]**2);
+              // Inclination from angular momentum vector h = r × v
+              const hx = pos[1]*vel[2] - pos[2]*vel[1];
+              const hy = pos[2]*vel[0] - pos[0]*vel[2];
+              const hz = pos[0]*vel[1] - pos[1]*vel[0];
+              const h = Math.sqrt(hx*hx + hy*hy + hz*hz);
+              const inc = h > 0 ? Math.acos(Math.max(-1, Math.min(1, hz / h))) : 0;
+              const phase = Math.atan2(pos[1], pos[0]);
+              // Angular speed from velocity magnitude
+              const speedKms = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
+              const angularSpeed = r > 0 ? speedKms / r : Math.sqrt(MU / (r * r * r));
+              
+              return {
+                id: sat.id,
+                name: sat.id,
+                status: sat.status === 'NOMINAL' ? 'nominal' : sat.status === 'OUTAGE' ? 'critical' : 'warning' as 'nominal'|'warning'|'critical',
+                fuel: Math.max(0, Math.min(100, Math.round(sat.fuel_kg * 2))),
+                pos, vel,
+                orbitRadius: r,
+                orbitInclination: inc,
+                orbitPhase: phase,
+                orbitSpeed: angularSpeed,
+                collisionRisk: false,
+                autoManeuvering: false,
+              };
+            });
+            
+            // Transform debris format
+            const transformedDebris = data.debris_cloud.map((deb: any) => {
+              const [id, lat, lon, alt, px, py, pz, vx, vy, vz] = deb;
+              const r = Math.sqrt(px*px + py*py + pz*pz);
+              const speedKms = Math.sqrt(vx*vx + vy*vy + vz*vz);
+              
+              return {
+                id,
+                x: px,
+                y: py,
+                z: pz,
+                vx,
+                vy,
+                vz,
+                r,
+                phase: Math.atan2(py, px),
+                speed: r > 0 ? speedKms / r : 0,
+                inclination: r > 0 ? Math.acos(Math.max(-1, Math.min(1, pz / r))) : 0,
+              };
+            });
+            
+            setSatellites(transformedSats);
+            setDebris(transformedDebris);
+            setSimTime(data.timestamp);
+            setTick(t => t + 1);
+          }
+        }
+      } catch (error) {
+        console.warn('Data refresh failed:', error);
+      }
+    };
 
-  const stationEcef = (station: GroundStation) => {
-    const EARTH_RADIUS_KM = 6371;
-    const r = EARTH_RADIUS_KM + (station.altitudeKm ?? 0);
-    const phi = (90 - station.lat) * Math.PI / 180;
-    const theta = (station.lon + 180) * Math.PI / 180;
-    return [
-      -(r * Math.sin(phi) * Math.cos(theta)),
-      r * Math.cos(phi),
-      r * Math.sin(phi) * Math.sin(theta),
-    ] as [number, number, number];
-  };
+    // Initial refresh after 1 second
+    const initialTimeout = setTimeout(refreshData, 1000);
+    
+    // Then refresh every 2 seconds to display updated positions
+    refreshIntervalRef.current = setInterval(refreshData, 2000);
 
-  const dot = (a: [number, number, number], b: [number, number, number]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const norm = (v: [number, number, number]) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    return () => {
+      if (initialTimeout) clearTimeout(initialTimeout);
+      if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
+    };
+  }, []);
 
-  const isSatelliteInStationCone = (station: GroundStation, sat: Satellite) => {
-    if (!station.min_angle_deg && station.min_angle_deg !== 0) return false;
-    const sPos = stationEcef(station);
-    const satPos: [number, number, number] = sat.pos;
-    const v: [number, number, number] = [satPos[0] - sPos[0], satPos[1] - sPos[1], satPos[2] - sPos[2]];
-    const sNorm = norm(sPos);
-    const vNorm = norm(v);
-    if (vNorm === 0 || sNorm === 0) return false;
-    const vUnit: [number, number, number] = [v[0] / vNorm, v[1] / vNorm, v[2] / vNorm];
-    const zenith: [number, number, number] = [sPos[0] / sNorm, sPos[1] / sNorm, sPos[2] / sNorm];
-    const cosAngle = dot(vUnit, zenith);
-    const halfAngleRad = (90 - (station.min_angle_deg ?? 0)) * Math.PI / 180;
-    const cosThreshold = Math.cos(halfAngleRad);
-    if (cosAngle < cosThreshold) return false;
-
-    // Earth occlusion check
-    const d: [number, number, number] = [v[0], v[1], v[2]];
-    const d2 = dot(d, d);
-    const t0 = -dot(sPos, d) / d2;
-    if (t0 > 0 && t0 < 1) {
-      const closest: [number, number, number] = [sPos[0] + d[0] * t0, sPos[1] + d[1] * t0, sPos[2] + d[2] * t0];
-      const EARTH_RADIUS_KM = 6371;
-      if (dot(closest, closest) < EARTH_RADIUS_KM * EARTH_RADIUS_KM) return false;
-    }
-    return true;
-  };
-
-  const satellitesInStationCone = useMemo(() => {
-    if (!selectedStation) return [] as Satellite[];
-    return satellites.filter(sat => isSatelliteInStationCone(selectedStation, sat));
-  }, [satellites, selectedStation]);
+  const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
   // Collision risk is driven entirely by backend CDM warnings —
   // the snapshot already sets collisionRisk=true on affected satellites.
@@ -147,30 +190,25 @@ export default function App() {
     };
     setManeuvers(prev => [...prev, newMnv]);
 
+    // Send to backend if connected
     if (!useMock) {
+      // Convert deltaV + direction to RTN vector
       const dv = plan.deltaV;
-      const deltaV_vector =
-        plan.direction === 'prograde'
-          ? { x: 0, y: dv, z: 0 }
-          : plan.direction === 'retrograde'
-            ? { x: 0, y: -dv, z: 0 }
-            : { x: dv, y: 0, z: 0 };
-      const baseMs = new Date(simTime).getTime();
-      const burnTimeIso = new Date(
-        plan.scheduledHour === 0 ? baseMs - 2000 : baseMs + plan.scheduledHour * 3600 * 1000,
-      ).toISOString();
+      const dvRtn =
+        plan.direction === 'prograde'   ? [0, dv, 0] :
+        plan.direction === 'retrograde' ? [0, -dv, 0] :
+        plan.direction === 'radial'     ? [dv, 0, 0] :
+        plan.direction === 'anti-radial'? [-dv, 0, 0] :
+        plan.direction === 'normal'     ? [0, 0, dv] :
+        plan.direction === 'anti-normal'? [0, 0, -dv] :
+                                          [0, 0, 0];
       fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/maneuver/schedule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          satelliteId: plan.satelliteId,
-          maneuver_sequence: [
-            {
-              burn_id: mnvId,
-              burnTime: burnTimeIso,
-              deltaV_vector,
-            },
-          ],
+          satellite_id: plan.satelliteId,
+          delta_v_rtn: dvRtn,
+          burn_time: plan.scheduledHour === 0 ? null : undefined,
         }),
       }).catch(() => { /* fire-and-forget */ });
     }
@@ -183,10 +221,10 @@ export default function App() {
 
     setManeuverModal(false);
     setManeuverPlan(null);
-  }, [useMock, simTime]);
+  }, [useMock]);
 
   const handleOpenModal = useCallback(() => {
-    if (!selectedId || selectedType !== 'satellite') return;
+    if (!selectedId) return;
     const sat = satellites.find(s => s.id === selectedId);
     if (!sat) return;
     setManeuverPlan({ satelliteId: selectedId, type: 'avoidance', direction: 'prograde', deltaV: 0.5, scheduledHour: 0 });
@@ -297,7 +335,7 @@ export default function App() {
         }}>
           {/* Satellite list takes all available space */}
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <SatelliteList satellites={satellites} selectedId={selectedSat?.id ?? null} onSelect={(id) => { setSelectedId(id); setSelectedType('satellite'); }} />
+            <SatelliteList satellites={satellites} selectedId={selectedId} onSelect={setSelectedId} />
           </div>
           
           {/* Timeline button at bottom of left panel - always visible */}
@@ -346,11 +384,10 @@ export default function App() {
             groundStations={GROUND_STATIONS}
             simTime={simTime}
             selectedId={selectedId}
-            selectedType={selectedType}
             hoveredId={hoveredId}
             maneuverPlan={maneuverModal ? maneuverPlan : null}
             flaringId={flaringId}
-            onSelect={(id, type) => { setSelectedId(id); setSelectedType(type); }}
+            onSelect={setSelectedId}
             onHover={handleHover}
             tick={tick}
           />
@@ -387,7 +424,7 @@ export default function App() {
         </div>
 
         <div className="right-panel" style={{ 
-          display: selectedId ? 'flex' : 'none', 
+          display: 'flex', 
           flexDirection: 'column',
           borderLeft: '1px solid var(--border)',
           background: 'var(--bg-panel)',
@@ -399,11 +436,8 @@ export default function App() {
         }}>
           <DetailPanel
             satellite={selectedSat}
-            groundStation={selectedStation}
-            satellitesInCone={satellitesInStationCone}
             maneuvers={maneuvers}
             onPlanManeuver={handleOpenModal}
-            onClose={() => { setSelectedId(null); setSelectedType(null); }}
           />
         </div>
       </div>
@@ -420,9 +454,8 @@ export default function App() {
 
       {showTimeline && (
         <ManeuverTimeline
+          maneuvers={maneuvers}
           satellites={satellites}
-          simTime={simTime}
-          timeWindowMinutes={1440}
           onClose={() => setShowTimeline(false)}
         />
       )}

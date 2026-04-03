@@ -28,7 +28,7 @@ class DeltaVVector(BaseModel):
 
 class ManeuverSequenceItem(BaseModel):
     burn_id: str
-    burnTime: datetime
+    burnTime: datetime | None = None
     deltaV_vector: DeltaVVector
 
 class ManeuverRequest(BaseModel):
@@ -77,11 +77,12 @@ async def schedule_maneuver(req: ManeuverRequest):
             
             projected_mass -= required_fuel
             
+            burn_time = item.burnTime or datetime.now(timezone.utc)
             burn = ScheduledBurn(
                 burn_id=item.burn_id,
                 satellite_id=req.satelliteId,
                 delta_v_rtn=[dv.x, dv.y, dv.z],
-                burn_time=item.burnTime,
+                burn_time=burn_time,
             )
             simulation_state.enqueue_burn(burn)
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -86,6 +87,19 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 			})
 		}
 		c.JSON(http.StatusAccepted, gin.H{"logged": "telemetry", "count": len(body.Objects)})
+	})
+
+	// ── POST /clear — clear all collections ──────────────────────────────
+	r.POST("/clear", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		
+		err := p.ClearCollections(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"cleared": "collections"})
 	})
 
 	// ── GET /objects — return all satellites + debris from Atlas ──────────

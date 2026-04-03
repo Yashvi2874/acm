@@ -7,7 +7,7 @@ services:
     expose:
       - "8080"
     environment:
-      - MONGO_URI=mongodb+srv://rajasekharp_db_user:vM4MT9yMtda7dCKj@nsh-test.klojnbb.mongodb.net/?appName=NSH-Test
+      - MONGO_URI=mongodb://mongodb:27017
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s

@@ -1,5 +1,5 @@
 """
-Seed Atlas with exactly 10 satellites and 50 debris objects.
+Seed Atlas with 50 satellites and 10,000+ debris objects.
 
 Generates physically realistic LEO orbits (400-800 km altitude),
 POSTs them to POST /api/telemetry in the spec-exact format,
@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import math
+import os
 import random
 import urllib.request
 import urllib.error
@@ -60,13 +61,16 @@ def _orbit_state(alt_km: float, inc_deg: float, raan_deg: float, ta_deg: float) 
 
 
 def generate_satellites(n: int = 50) -> list[dict]:
-    """Generate n satellites in a Walker-like constellation at 550 km."""
+    """Generate n satellites with diverse altitudes and inclinations."""
     sats = []
-    alt  = 550.0
-    inc  = 53.0   # Starlink-like inclination
+    base_alt = 500.0
     for i in range(n):
-        raan = (360.0 / n) * i          # evenly spaced planes
-        ta   = random.uniform(0, 360)   # random phase within plane
+        # Spread across multiple orbital shells to avoid single homogenous plane
+        alt = base_alt + random.uniform(-20, 80) + (i % 5) * 15
+        inc = random.uniform(42.0, 98.0)
+        raan = random.uniform(0, 360)
+        ta   = random.uniform(0, 360)
+
         pos, vel = _orbit_state(alt, inc, raan, ta)
         sats.append({
             "id":     f"SAT-{i+1:03d}",
@@ -81,13 +85,13 @@ def generate_satellites(n: int = 50) -> list[dict]:
 
 
 def generate_debris(n: int = 50) -> list[dict]:
-    """Generate n debris objects scattered across LEO (400-800 km)."""
+    """Generate n debris objects scattered across LEO (350-1200 km) with random orbits."""
     debs = []
     for i in range(n):
-        alt  = random.uniform(400, 800)
-        inc  = random.uniform(0, 98)    # full range including SSO
-        raan = random.uniform(0, 360)
-        ta   = random.uniform(0, 360)
+        alt  = random.uniform(350.0, 1200.0)
+        inc  = random.uniform(0.0, 98.0)    # full range including SSO
+        raan = random.uniform(0.0, 360.0)
+        ta   = random.uniform(0.0, 360.0)
         pos, vel = _orbit_state(alt, inc, raan, ta)
         debs.append({
             "id":   f"DEB-{10000 + i:05d}",
@@ -98,43 +102,61 @@ def generate_debris(n: int = 50) -> list[dict]:
     return debs
 
 
-def post_telemetry(api_url: str, objects: list[dict]) -> dict:
-    payload = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-        "objects": objects,
-    }
-    data = json.dumps(payload).encode()
-    req  = urllib.request.Request(
-        f"{api_url}/api/telemetry",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+def post_telemetry_batch(api_url: str, objects: list[dict], batch_size: int = 100) -> dict:
+    """Post telemetry in batches to avoid payload size limits."""
+    total_processed = 0
+    total_cdm = 0
+    
+    for i in range(0, len(objects), batch_size):
+        batch = objects[i:i + batch_size]
+        payload = {
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "objects": batch,
+        }
+        data = json.dumps(payload).encode()
+        req  = urllib.request.Request(
+            f"{api_url}/api/telemetry",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            if result.get("status") != "ACK":
+                raise Exception(f"Batch {i//batch_size + 1} failed: {result}")
+            total_processed += result["processed_count"]
+            total_cdm = max(total_cdm, result["active_cdm_warnings"])
+        
+        print(f"    Batch {i//batch_size + 1}: {len(batch)} objects processed")
+    
+    return {"status": "ACK", "processed_count": total_processed, "active_cdm_warnings": total_cdm}
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8000")
+    parser.add_argument("--satellites", type=int, default=int(os.getenv("SATELLITE_COUNT", "50")))
+    parser.add_argument("--debris", type=int, default=int(os.getenv("DEBRIS_COUNT", "10000")))
+    parser.add_argument("--batch", type=int, default=int(os.getenv("BATCH_SIZE", "200")))
     args = parser.parse_args()
 
     print(f"Seeding Atlas via {args.api} ...")
+    print(f"Using dynamic population settings: satellites={args.satellites}, debris={args.debris}, batch={args.batch}")
 
-    satellites = generate_satellites(50)
-    debris     = generate_debris(50)
+    satellites = generate_satellites(args.satellites)
+    debris     = generate_debris(args.debris)
     all_objects = satellites + debris
 
     print(f"  Generated: {len(satellites)} satellites, {len(debris)} debris")
 
-    # POST in one batch
-    result = post_telemetry(args.api, all_objects)
+    # POST in batches to avoid payload size limits
+    result = post_telemetry_batch(args.api, all_objects, batch_size=args.batch)
     print(f"  Response:  {result}")
 
     if result.get("status") == "ACK":
         print(f"\n  Saved to Atlas:")
-        print(f"    satellites collection : 50 documents")
-        print(f"    debris collection     : 50 documents")
+        print(f"    satellites collection : {len(satellites)} documents")
+        print(f"    debris collection     : {len(debris)} documents")
         print(f"    telemetry collection  : {result['processed_count']} log entries")
         print(f"\n  Active CDM warnings: {result['active_cdm_warnings']}")
         print("\nDone. Refresh the frontend to see live data from Atlas.")

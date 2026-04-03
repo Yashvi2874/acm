@@ -10,13 +10,14 @@ export interface ConjunctionInfo {
 
 export type SatelliteStatus = 'nominal' | 'warning' | 'critical';
 export type ManeuverType = 'avoidance' | 'station-keeping' | 'recovery';
-export type BurnDirection = 'prograde' | 'retrograde' | 'radial';
+export type BurnDirection = 'prograde' | 'retrograde' | 'radial' | 'anti-radial' | 'normal' | 'anti-normal';
 
 export interface Satellite {
   id: string;
   name: string;
   status: SatelliteStatus;
   fuel: number;
+  mass_kg: number;
   pos: [number, number, number]; // ECI km
   vel: [number, number, number]; // km/s
   orbitRadius: number; // km from Earth center

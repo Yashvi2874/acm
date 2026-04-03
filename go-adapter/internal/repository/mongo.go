@@ -64,15 +64,32 @@ func NewMongoRepository(ctx context.Context, uri, dbName, collName string) (*Mon
 }
 
 // UpsertObject upserts a SpaceObject into the correct collection by type.
+// Enforces priority: incoming API telemetry has priority over existing DB state by updated_at comparison.
 func (r *MongoRepository) UpsertObject(ctx context.Context, obj SpaceObject) error {
 	col := r.debris
 	if obj.Type == "SATELLITE" {
 		col = r.satellites
 	}
+	
+	// First, check if document exists and compare updated_at
+	var existing SpaceObject
+	err := col.FindOne(ctx, bson.M{"_id": obj.ID}).Decode(&existing)
+	if err == nil {
+		// Document exists, check if incoming is newer
+		if obj.UpdatedAt.Before(existing.UpdatedAt) || obj.UpdatedAt.Equal(existing.UpdatedAt) {
+			// Incoming is not newer, skip update
+			return nil
+		}
+	} else if err != mongo.ErrNoDocuments {
+		// Other error
+		return err
+	}
+	// If not found or incoming is newer, proceed with upsert
+	
 	filter := bson.M{"_id": obj.ID}
 	update := bson.M{"$set": obj}
 	opts := options.Update().SetUpsert(true)
-	_, err := col.UpdateOne(ctx, filter, update, opts)
+	_, err = col.UpdateOne(ctx, filter, update, opts)
 	return err
 }
 

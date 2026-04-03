@@ -1,19 +1,30 @@
 /**
  * usePhysicsSimulation
  *
- * Connects the React UI to the FastAPI physics backend:
- * 1. Seeds in-memory simulation from Atlas (Mongo via Go) when available
- * 2. Polls POST /api/simulate/step + GET /api/simulate/snapshot
+ * Connects the React UI to either:
+ *   1. demo/live object data from the Go adapter via Mongo, or
+ *   2. the FastAPI physics backend.
  *
- * This path supplies maneuverTrajectory, hasPendingBurns, conjunctions, and CDMs.
+ * Falls back to mock animation if neither source is reachable.
  */
 import { useEffect, useRef, useCallback } from 'react';
 import type { Satellite, DebrisPoint } from './types';
 
 const API = import.meta.env.VITE_API_URL ?? '';
-const POLL_MS = 500;
-const SIM_DT = 10.0;
-const MU = 398600.4418;
+// Poll every 2 seconds to fetch updated satellite/debris positions from database
+// The backend propagates positions every 60 seconds using RK4+J2
+// Frontend fetches every 2 seconds to display smooth motion
+const POLL_MS = 2000;  // 2 seconds for smooth visualization
+
+const SIM_DT  = 10.0;
+const MU      = 398600.4418;
+
+interface VisualizationSnapshot {
+  timestamp: string;
+  satellites: Array<{ id: string; lat: number; lon: number; fuel_kg: number; status: string; eci_km: [number, number, number]; eci_vel_kms: [number, number, number] }>;
+  debris_cloud: Array<[string, number, number, number, number, number, number, number, number, number]>; // id, lat, lon, alt, px, py, pz, vx, vy, vz
+  cdm_warnings: CdmWarning[];
+}
 
 interface SimSnapshot {
   satellites: Satellite[];
@@ -33,7 +44,7 @@ export interface CdmWarning {
 
 interface AtlasObject {
   id: string;
-  type?: string;
+  type: string;
   r: { x: number; y: number; z: number };
   v: { x: number; y: number; z: number };
   status?: string;
@@ -51,7 +62,7 @@ interface InitObject {
   status?: string;
 }
 
-type DataMode = 'sim' | 'unavailable';
+type DataMode = 'atlas' | 'sim' | 'unavailable';
 
 function norm3(x: number, y: number, z: number) {
   return Math.sqrt(x * x + y * y + z * z);
@@ -86,138 +97,190 @@ function frontendStatus(status?: string): Satellite['status'] {
   }
 }
 
-function mapBackendStatus(s: string | undefined): string {
-  const st = (s ?? 'nominal').toLowerCase();
-  if (st === 'decommissioned' || st === 'eol') return 'safe-hold';
-  return s ?? 'nominal';
-}
+function atlasObjectsToSnapshot(data: { satellites: AtlasObject[]; debris: AtlasObject[] }): SimSnapshot {
+  const nearbyDebris = new Map<string, string>();
 
-/** Build POST /api/simulate/init payload from Go /objects response */
-function atlasToInitObjects(data: { satellites: AtlasObject[]; debris: AtlasObject[] }): InitObject[] {
-  const objects: InitObject[] = [];
-  data.satellites.forEach((sat) => {
-    objects.push({
+  const satellites = data.satellites.map((sat, index) => {
+    const orbitRadius = norm3(sat.r.x, sat.r.y, sat.r.z);
+    const speedKms = norm3(sat.v.x, sat.v.y, sat.v.z);
+
+    const collisionRisk = data.debris.some((deb) => {
+      const distance = norm3(sat.r.x - deb.r.x, sat.r.y - deb.r.y, sat.r.z - deb.r.z);
+      if (distance < 250) {
+        nearbyDebris.set(sat.id, deb.id);
+        return true;
+      }
+      return false;
+    });
+
+    return {
       id: sat.id,
-      object_type: 'satellite',
-      position: [sat.r.x, sat.r.y, sat.r.z],
-      velocity: [sat.v.x, sat.v.y, sat.v.z],
-      fuel_kg: sat.fuel_kg ?? 0.5,
-      mass_kg: sat.mass_kg ?? 4.0,
-      status: mapBackendStatus(sat.status),
-    });
-  });
-  data.debris.forEach((deb) => {
-    objects.push({
-      id: deb.id,
-      object_type: 'debris',
-      position: [deb.r.x, deb.r.y, deb.r.z],
-      velocity: [deb.v.x, deb.v.y, deb.v.z],
-    });
-  });
-  return objects;
-}
-
-async function fetchAtlasRaw(): Promise<{ satellites: AtlasObject[]; debris: AtlasObject[] } | null> {
-  try {
-    const res = await fetch(`${API}/api/telemetry/objects`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data.satellites?.length && !data.debris?.length) return null;
-    return data;
-  } catch {
-    return null;
-  }
-}
-
-/** Normalize GET /api/simulate/snapshot into strict Satellite / DebrisPoint shapes */
-function normalizeSnapshot(snap: SimSnapshot, nameMap: Map<string, string>): SimSnapshot {
-  const satellites: Satellite[] = snap.satellites.map((raw: Record<string, unknown>, index: number) => {
-    const id = String(raw.id ?? `SAT-${index}`);
-    const pos = raw.pos as number[];
-    const vel = raw.vel as number[];
-    const r = norm3(pos[0], pos[1], pos[2]);
-    const speedKms = norm3(vel[0], vel[1], vel[2]);
-    const tr = {
-      x: pos[0],
-      y: pos[1],
-      z: pos[2],
+      name: `Orbital-${index + 1}`,
+      status: frontendStatus(sat.status),
+      fuel: Math.max(0, Math.min(100, Math.round((sat.fuel_kg ?? 0.4) * 200))),
+      pos: [sat.r.x, sat.r.y, sat.r.z] as [number, number, number],
+      vel: [sat.v.x, sat.v.y, sat.v.z] as [number, number, number],
+      orbitRadius,
+      orbitInclination: inclinationFromState(sat.r, sat.v),
+      orbitPhase: phaseFromPosition(sat.r),
+      orbitSpeed: orbitRadius > 0 ? speedKms / orbitRadius : Math.sqrt(MU / 6771) / 6771,
+      collisionRisk,
+      riskTarget: nearbyDebris.get(sat.id),
     };
-    const tv = {
-      x: vel[0],
-      y: vel[1],
-      z: vel[2],
-    };
-    const mt = raw.maneuverTrajectory as [number, number, number][] | undefined;
+  });
+
+  const debris = data.debris.map((deb) => {
+    const r = norm3(deb.r.x, deb.r.y, deb.r.z);
+    const speedKms = norm3(deb.v.x, deb.v.y, deb.v.z);
     return {
-      id,
-      name: nameMap.get(id) ?? String(raw.name ?? id),
-      status: frontendStatus(raw.status as string),
-      fuel: typeof raw.fuel === 'number' ? raw.fuel : 100,
-      pos: [pos[0], pos[1], pos[2]] as [number, number, number],
-      vel: [vel[0], vel[1], vel[2]] as [number, number, number],
-      orbitRadius: typeof raw.orbitRadius === 'number' ? raw.orbitRadius : r,
-      orbitInclination: typeof raw.orbitInclination === 'number' ? raw.orbitInclination : inclinationFromState(tr, tv),
-      orbitPhase: typeof raw.orbitPhase === 'number' ? raw.orbitPhase : phaseFromPosition(tr),
-      orbitSpeed:
-        typeof raw.orbitSpeed === 'number'
-          ? raw.orbitSpeed
-          : r > 0
-            ? speedKms / r
-            : Math.sqrt(MU / 6771) / 6771,
-      collisionRisk: Boolean(raw.collisionRisk),
-      riskTarget: raw.riskTarget as string | undefined,
-      conjunctions: raw.conjunctions as Satellite['conjunctions'],
-      maneuverTrajectory: mt && mt.length >= 2 ? mt : undefined,
-      hasPendingBurns: Boolean(raw.hasPendingBurns),
-      lastManeuver: raw.lastManeuver as string | undefined,
-      autoManeuvering: raw.autoManeuvering as boolean | undefined,
-    };
-  });
-
-  const debris: DebrisPoint[] = (snap.debris ?? []).map((d: Record<string, unknown>, i: number) => {
-    const x = Number(d.x);
-    const y = Number(d.y);
-    const z = Number(d.z);
-    const vx = Number(d.vx);
-    const vy = Number(d.vy);
-    const vz = Number(d.vz);
-    const r = typeof d.r === 'number' ? d.r : norm3(x, y, z);
-    const speedKms = norm3(vx, vy, vz);
-    const tr = { x, y, z };
-    const tv = { x: vx, y: vy, z: vz };
-    return {
-      id: (d.id as string) ?? `DEB-${String(i + 1).padStart(3, '0')}`,
-      x,
-      y,
-      z,
-      vx,
-      vy,
-      vz,
+      x: deb.r.x,
+      y: deb.r.y,
+      z: deb.r.z,
+      vx: deb.v.x,
+      vy: deb.v.y,
+      vz: deb.v.z,
       r,
-      phase: typeof d.phase === 'number' ? d.phase : phaseFromPosition(tr),
-      speed: typeof d.speed === 'number' ? d.speed : r > 0 ? speedKms / r : 0,
-      inclination: typeof d.inclination === 'number' ? d.inclination : inclinationFromState(tr, tv),
+      phase: phaseFromPosition(deb.r),
+      speed: r > 0 ? speedKms / r : 0,
+      inclination: inclinationFromState(deb.r, deb.v),
     };
   });
 
   return {
     satellites,
     debris,
-    cdm_warnings: snap.cdm_warnings ?? [],
-    sim_time: snap.sim_time,
+    cdm_warnings: [],
+    sim_time: new Date().toISOString(),
   };
 }
 
-async function postInit(objects: InitObject[]): Promise<boolean> {
+let cachedSnapshot: SimSnapshot | null = null;
+let lastFetchTime = 0;
+
+async function fetchVisualizationSnapshot(): Promise<SimSnapshot | null> {
+  try {
+    const res = await fetch(`${API}/api/visualization/snapshot`);
+    if (!res.ok) return cachedSnapshot;
+    const data = await res.json() as VisualizationSnapshot;
+
+    const satellites = data.satellites.map((s) => {
+      const pos: [number, number, number] = [s.eci_km[0], s.eci_km[1], s.eci_km[2]];
+      const vel: [number, number, number] = [s.eci_vel_kms[0], s.eci_vel_kms[1], s.eci_vel_kms[2]];
+      const orbitRadius = Math.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2);
+      const speedKms = Math.sqrt(vel[0] ** 2 + vel[1] ** 2 + vel[2] ** 2);
+      const orbitInclination = Math.acos(pos[2] / orbitRadius);
+      const orbitPhase = Math.atan2(pos[1], pos[0]);
+
+      // Get mass from debug data
+      const orbitalData = (data as any).debug?.satellite_detail?.[s.id] ?? null;
+      const mass_kg = orbitalData?.mass_kg || 550.0;
+
+      return {
+        id: s.id,
+        name: s.id,
+        status: frontendStatus(s.status),
+        fuel: Math.max(0, Math.min(100, Math.round(s.fuel_kg * 2.0))),
+        mass_kg,
+        pos,
+        vel,
+        orbitRadius,
+        orbitInclination,
+        orbitPhase,
+        orbitSpeed: orbitRadius > 0 ? speedKms / orbitRadius : Math.sqrt(MU / 6771) / 6771,
+        collisionRisk: false,
+        riskTarget: null,
+      } as Satellite;
+    });
+
+    const debris = data.debris_cloud.map((d) => {
+      const [id, lat, lon, alt, px, py, pz, vx, vy, vz] = d;
+      const r = Math.sqrt(px * px + py * py + pz * pz);
+      const speedKms = Math.sqrt(vx * vx + vy * vy + vz * vz);
+      return {
+        x: px,
+        y: py,
+        z: pz,
+        vx,
+        vy,
+        vz,
+        r,
+        phase: Math.atan2(py, px),
+        speed: r > 0 ? speedKms / r : 0,
+        inclination: Math.acos(pz / r),
+      };
+    });
+
+    const snapshot: SimSnapshot = {
+      satellites,
+      debris,
+      cdm_warnings: data.cdm_warnings,
+      sim_time: data.timestamp,
+    };
+
+    cachedSnapshot = snapshot;
+    lastFetchTime = Date.now();
+    return snapshot;
+  } catch {
+    return cachedSnapshot;
+  }
+}
+
+async function fetchAtlasSnapshot(): Promise<SimSnapshot | null> {
+  try {
+    const res = await fetch(`${API}/api/telemetry/objects`);
+    if (!res.ok) return cachedSnapshot;
+
+    const data = await res.json() as {
+      satellites: AtlasObject[];
+      debris: AtlasObject[];
+    };
+
+    if (data.satellites.length === 0 && data.debris.length === 0) {
+      return cachedSnapshot;
+    }
+
+    const newSnapshot = atlasObjectsToSnapshot(data);
+    cachedSnapshot = newSnapshot;
+    lastFetchTime = Date.now();
+    return newSnapshot;
+  } catch {
+    return cachedSnapshot;
+  }
+}
+
+async function initBackend(satellites: Satellite[], debris: DebrisPoint[]): Promise<DataMode> {
+  const atlasSnapshot = await fetchAtlasSnapshot();
+  if (atlasSnapshot) {
+    return 'atlas';
+  }
+
+  const objects: InitObject[] = [
+    ...satellites.map((s) => ({
+      id: s.id,
+      object_type: 'satellite' as const,
+      position: s.pos,
+      velocity: s.vel,
+      fuel_kg: s.fuel * 0.005,
+      mass_kg: 4.0,
+      status: s.status === 'critical' ? 'safe-hold' : s.status === 'warning' ? 'comms-loss' : 'nominal',
+    })),
+    ...debris.map((d, i) => ({
+      id: `DEB-${String(i + 1).padStart(3, '0')}`,
+      object_type: 'debris' as const,
+      position: [d.x, d.y, d.z] as [number, number, number],
+      velocity: [d.vx, d.vy, d.vz] as [number, number, number],
+    })),
+  ];
+
   try {
     const res = await fetch(`${API}/api/simulate/init`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ objects }),
     });
-    return res.ok;
+    return res.ok ? 'sim' : 'unavailable';
   } catch {
-    return false;
+    return 'unavailable';
   }
 }
 
@@ -230,10 +293,54 @@ async function stepAndSnapshot(): Promise<SimSnapshot | null> {
     });
     if (!stepRes.ok) return null;
 
-    const snapRes = await fetch(`${API}/api/simulate/snapshot`);
-    if (!snapRes.ok) return null;
+    const snapRes = await fetch(`${API}/api/visualization/snapshot`);
+    if (!snapRes.ok) {
+      const fallbackRes = await fetch(`${API}/api/simulate/snapshot`);
+      if (!fallbackRes.ok) return null;
+      return await fallbackRes.json() as SimSnapshot;
+    }
 
-    return (await snapRes.json()) as SimSnapshot;
+    const visualization = await snapRes.json() as VisualizationSnapshot;
+    const snapshot: SimSnapshot = {
+      satellites: visualization.satellites.map((sat) => {
+        const pos: [number, number, number] = [sat.eci_km[0], sat.eci_km[1], sat.eci_km[2]];
+        const vel: [number, number, number] = [sat.eci_vel_kms[0], sat.eci_vel_kms[1], sat.eci_vel_kms[2]];
+        const orbitRadius = norm3(pos[0], pos[1], pos[2]);
+        const speedKms = norm3(vel[0], vel[1], vel[2]);
+        const orbitInclination = inclinationFromState({x: pos[0], y: pos[1], z: pos[2]}, {x: vel[0], y: vel[1], z: vel[2]});
+        const orbitPhase = phaseFromPosition({x: pos[0], y: pos[1], z: pos[2]});
+
+        return {
+          id: sat.id,
+          name: sat.id,
+          status: frontendStatus(sat.status),
+          fuel: Math.max(0, Math.min(100, Math.round(sat.fuel_kg * 2.0))),
+          pos,
+          vel,
+          orbitRadius,
+          orbitInclination,
+          orbitPhase,
+          orbitSpeed: orbitRadius > 0 ? speedKms / orbitRadius : 0,
+          collisionRisk: false,
+          riskTarget: null,
+        } as Satellite;
+      }),
+      debris: visualization.debris_cloud.map((d) => ({
+        id: d[0],
+        x: d[4],
+        y: d[5],
+        z: d[6],
+        vx: d[7],
+        vy: d[8],
+        vz: d[9],
+      })),
+
+      cdm_warnings: visualization.cdm_warnings,
+      sim_time: visualization.timestamp,
+    };
+
+    cachedSnapshot = snapshot;
+    return snapshot;
   } catch {
     return null;
   }
@@ -256,6 +363,7 @@ export function usePhysicsSimulation({
 }: Options) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nameMapRef = useRef<Map<string, string>>(new Map());
+  const lastSnapshotRef = useRef<SimSnapshot | null>(null);
 
   const stop = useCallback(() => {
     if (timerRef.current) {
@@ -272,49 +380,37 @@ export function usePhysicsSimulation({
     let cancelled = false;
 
     (async () => {
-      const atlas = await fetchAtlasRaw();
+      const mode = await initBackend(initialSatellites, initialDebris);
       if (cancelled) return;
 
-      let initObjects: InitObject[] | null = null;
-      if (atlas && (atlas.satellites.length > 0 || atlas.debris.length > 0)) {
-        initObjects = atlasToInitObjects(atlas);
-      } else if (initialSatellites.length > 0 || initialDebris.length > 0) {
-        initObjects = [
-          ...initialSatellites.map((s) => ({
-            id: s.id,
-            object_type: 'satellite' as const,
-            position: s.pos,
-            velocity: s.vel,
-            fuel_kg: s.fuel * 0.005,
-            mass_kg: 4.0,
-            status: s.status === 'critical' ? 'safe-hold' : s.status === 'warning' ? 'comms-loss' : 'nominal',
-          })),
-          ...initialDebris.map((d, i) => ({
-            id: (d as DebrisPoint & { id?: string }).id ?? `DEB-${String(i + 1).padStart(3, '0')}`,
-            object_type: 'debris' as const,
-            position: [d.x, d.y, d.z] as [number, number, number],
-            velocity: [d.vx, d.vy, d.vz] as [number, number, number],
-          })),
-        ];
-      }
-
-      if (!initObjects || initObjects.length === 0) {
+      if (mode === 'unavailable') {
         onFallback();
         return;
       }
 
-      const ok = await postInit(initObjects);
+      // Fetch immediately on first load
+      const initialSnap = mode === 'atlas'
+        ? await fetchAtlasSnapshot()
+        : await stepAndSnapshot();
+      
       if (cancelled) return;
-      if (!ok) {
-        onFallback();
-        return;
+
+      if (initialSnap) {
+        lastSnapshotRef.current = initialSnap;
+        const sats = initialSnap.satellites.map((s) => ({
+          ...s,
+          name: nameMapRef.current.get(s.id) ?? s.name,
+          pos: s.pos as [number, number, number],
+          vel: s.vel as [number, number, number],
+        }));
+        onUpdate(sats, initialSnap.debris, initialSnap.cdm_warnings, initialSnap.sim_time);
       }
 
-      const mode: DataMode = 'sim';
-
+      // Poll every 15 minutes for new data from database
       timerRef.current = setInterval(async () => {
-        if (mode !== 'sim') return;
-        const snap = await stepAndSnapshot();
+        const snap = mode === 'atlas'
+          ? await fetchAtlasSnapshot()
+          : await stepAndSnapshot();
         if (cancelled) return;
 
         if (!snap) {
@@ -323,8 +419,17 @@ export function usePhysicsSimulation({
           return;
         }
 
-        const normalized = normalizeSnapshot(snap, nameMapRef.current);
-        onUpdate(normalized.satellites, normalized.debris, normalized.cdm_warnings, normalized.sim_time);
+        // Only update if data actually changed
+        if (snap !== lastSnapshotRef.current) {
+          lastSnapshotRef.current = snap;
+          const sats = snap.satellites.map((s) => ({
+            ...s,
+            name: nameMapRef.current.get(s.id) ?? s.name,
+            pos: s.pos as [number, number, number],
+            vel: s.vel as [number, number, number],
+          }));
+          onUpdate(sats, snap.debris, snap.cdm_warnings, snap.sim_time);
+        }
       }, POLL_MS);
     })();
 

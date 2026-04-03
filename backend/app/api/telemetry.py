@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 from fastapi import APIRouter
@@ -28,6 +28,9 @@ from state_store import simulation_state
 
 router = APIRouter()
 GO_ADAPTER_URL = os.getenv("GO_ADAPTER_URL", "http://go-adapter:8080")
+
+# Track last processed timestamp per object ID to handle rapid updates
+_last_processed = {}
 
 
 # ── Spec-exact request models ─────────────────────────────────────────────────
@@ -62,17 +65,24 @@ async def ingest_telemetry(batch: TelemetryBatch):
 
     async with simulation_state.lock:
         for obj in batch.objects:
+            obj_id = obj.id
+            last_ts = _last_processed.get(obj_id)
+            if last_ts and (ts - last_ts) < timedelta(seconds=1):
+                # Incoming telemetry of same ID within last second: override queue when collisions
+                # Skip processing to avoid rapid duplicate updates
+                continue
+            
             pos = [obj.r.x, obj.r.y, obj.r.z]
             vel = [obj.v.x, obj.v.y, obj.v.z]
 
             if obj.type.upper() == "DEBRIS":
-                deb = simulation_state.get_or_create_debris(obj.id, pos, vel)
+                deb = simulation_state.get_or_create_debris(obj_id, pos, vel)
                 deb.position = pos
                 deb.velocity = vel
                 deb.last_updated = ts
             else:
                 # SATELLITE or any other controllable object
-                sat = simulation_state.get_or_create_satellite(obj.id)
+                sat = simulation_state.get_or_create_satellite(obj_id)
                 sat.position = pos
                 sat.velocity = vel
                 if obj.mass_kg is not None:
@@ -83,6 +93,8 @@ async def ingest_telemetry(batch: TelemetryBatch):
                 if obj.status is not None:
                     sat.status = obj.status  # type: ignore[assignment]
                 sat.last_updated = ts
+            
+            _last_processed[obj_id] = ts
 
         # Advance sim clock
         if ts > simulation_state.sim_time:

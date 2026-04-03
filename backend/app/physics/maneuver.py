@@ -11,7 +11,7 @@ import math
 import numpy as np
 from numpy.linalg import norm
 
-from .constants import MU
+from .constants import MU, DRY_MASS_KG, INITIAL_FUEL_KG, SPECIFIC_IMPULSE_S, G0, MAX_DELTA_V_PER_BURN_KMS, BURN_COOLDOWN_S
 
 # ── Propulsion constants ──────────────────────────────────────────────────────
 G0             = 9.80665    # m/s²    — standard gravity (exact SI definition)
@@ -96,6 +96,24 @@ def rtn_to_eci(
     return M @ delta_v_rtn
 
 
+def eci_to_rtn(
+    delta_v_eci: np.ndarray,
+    state: np.ndarray,
+) -> np.ndarray:
+    """
+    Convert a ΔV vector from ECI to RTN coordinates for diagnostics.
+
+    Args:
+        delta_v_eci: (3,) vector in ECI km/s
+        state:       (6,) array — current satellite ECI state
+
+    Returns:
+        (3,) ΔV in RTN frame (km/s)
+    """
+    M = rtn_to_eci_matrix(state)
+    return np.linalg.inv(M) @ delta_v_eci
+
+
 # ── 1D — Apply ΔV to satellite state ─────────────────────────────────────────
 
 def apply_delta_v(
@@ -155,6 +173,64 @@ def get_orbital_params(state: np.ndarray) -> dict:
     T = 2.0 * math.pi * math.sqrt(a ** 3 / MU)
 
     return {"r": r, "v": v, "a": a, "T": T}
+
+
+def validate_burn_limit(delta_v_kms: float) -> None:
+    """
+    Validate that the requested ΔV does not exceed the maximum per-burn limit.
+    
+    Raises:
+        BurnLimitExceeded: If |ΔV| > 0.015 km/s
+    """
+    if abs(delta_v_kms) > MAX_DELTA_V_PER_BURN_KMS:
+        raise BurnLimitExceeded(
+            f"Requested ΔV {delta_v_kms:.6f} km/s exceeds maximum {MAX_DELTA_V_PER_BURN_KMS:.6f} km/s per burn"
+        )
+
+
+def fuel_consumed(mass_kg: float, delta_v_kms: float) -> float:
+    """
+    Calculate fuel consumed using the Tsiolkovsky rocket equation.
+    
+    ∆m = m_current * (1 - exp(-|∆v| / (Isp * g0)))
+    
+    Where:
+    - m_current: current total mass (dry mass + remaining fuel)
+    - Isp: specific impulse (300 s)
+    - g0: standard gravity (9.80665e-3 km/s²)
+    """
+    if mass_kg <= 0 or delta_v_kms <= 0:
+        return 0.0
+    
+    m_current = float(mass_kg)
+    exp_term = math.exp(-delta_v_kms / (SPECIFIC_IMPULSE_S * G0))
+    delta_m = m_current * (1.0 - exp_term)
+    return float(max(0.0, delta_m))
+
+
+def check_eol(satellite_id: str, fuel_kg: float, position: list[float], velocity: list[float]):
+    """Check end-of-life conditions.
+
+    - Fuel threshold < 0.05 kg or orbital decay inside atmosphere.
+    """
+    if fuel_kg < 0.05:
+        return {
+            "satellite_id": satellite_id,
+            "eol": True,
+            "fuel_kg": fuel_kg,
+            "reason": "fuel depletion",
+        }
+
+    r = float(norm(np.asarray(position)))
+    if r < 6578.137:
+        return {
+            "satellite_id": satellite_id,
+            "eol": True,
+            "fuel_kg": fuel_kg,
+            "reason": "orbital decay",
+        }
+
+    return None
 
 
 # ── 2A/2C/2D/2E/2F — Hohmann transfer ────────────────────────────────────────
@@ -351,6 +427,63 @@ def one_tangent_burn(state: np.ndarray, r_target: float, a_tx: float) -> dict:
         "dV_B_rtn":    dV_B_rtn,
         "dV_A_eci":    dV_A_eci,
         "dV_B_eci":    dV_B_eci,
+    }
+
+
+def plan_evasion_burn(
+    sat_pos: list[float],
+    sat_vel: list[float],
+    deb_pos: list[float],
+    deb_vel: list[float],
+    tca_seconds: float = 3600.0,
+):
+    """Simple reactive avoidance burn plan for conjunction events."""
+    sat_r = np.array(sat_pos)
+    sat_v = np.array(sat_vel)
+    deb_r = np.array(deb_pos)
+    deb_v = np.array(deb_vel)
+
+    # Relative approach vector and velocity
+    rel_r = deb_r - sat_r
+    rel_v = deb_v - sat_v
+
+    # directional unit vector perpendicular to approach (avoidance direction)
+    if np.linalg.norm(rel_r) == 0 or np.linalg.norm(rel_v) == 0:
+        delta_v = np.array([0.0, 0.001, 0.0])
+    else:
+        # choose a small transverse burn to move off conjunction plane
+        perp = np.cross(rel_r, rel_v)
+        if np.linalg.norm(perp) < 1e-8:
+            perp = np.array([0.0, 0.0, 1.0])
+        perp = perp / np.linalg.norm(perp)
+        delta_v = 0.0015 * perp
+
+    return {
+        "delta_v_rtn": delta_v.tolist(),
+        "delta_v_magnitude_kms": float(np.linalg.norm(delta_v)),
+        "execute_after_seconds": max(1.0, min(tca_seconds, 600.0)),
+    }
+
+
+def plan_recovery_burn(
+    sat_pos: list[float],
+    sat_vel: list[float],
+    nominal_pos: list[float],
+    nominal_vel: list[float],
+):
+    """Plan a recovery burn to bring satellite closer to nominal slot."""
+    dv_r = np.array(nominal_pos) - np.array(sat_pos)
+    dv_v = np.array(nominal_vel) - np.array(sat_vel)
+
+    delta_v = dv_v * 0.2 + dv_r * 1e-4
+    mag = float(np.linalg.norm(delta_v))
+    if mag > 0.015:
+        delta_v = (delta_v / mag) * 0.015
+
+    return {
+        "delta_v_rtn": delta_v.tolist(),
+        "delta_v_magnitude_kms": float(np.linalg.norm(delta_v)),
+        "execute_after_seconds": 600.0,
     }
 
 

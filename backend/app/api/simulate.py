@@ -21,21 +21,17 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from state_store import simulation_state, CDMWarning
-from physics.propagator import propagate_rk4
+from state_store import simulation_state, CDMWarning, ScheduledBurn
+from physics.propagator import propagate_rk2, propagate_rk4
 from physics.conjunction import check_conjunctions
-from physics.maneuver import rtn_to_eci, fuel_consumed, check_eol, BURN_COOLDOWN_S
-from physics.decision import decision_step, init_fleet_from_sim
+from physics.maneuver import rtn_to_eci, fuel_consumed, check_eol, validate_burn_limit, plan_recovery_burn
+from physics.constants import BURN_COOLDOWN_S, STATION_KEEP_KM
 
 router = APIRouter()
 
-STATION_KEEP_KM  = 10.0   # max allowed drift from nominal slot
-
-# Per-process fleet state — initialised on first step, updated each tick
-_fleet: dict = {}
-
 import os
 GO_ADAPTER_URL = os.getenv("GO_ADAPTER_URL", "http://go-adapter:8080")
+INTEGRATOR_METHOD = os.getenv("INTEGRATOR_METHOD", "rk4").lower()
 
 
 async def _post(url: str, payload: dict) -> None:
@@ -133,8 +129,11 @@ async def init_simulation(req: InitRequest):
                 simulation_state.get_or_create_debris(obj.id, obj.position, obj.velocity)
 
     return {"initialized": len(req.objects), "sim_time": simulation_state.sim_time.isoformat()}
+
+
 class StepRequest(BaseModel):
     step_seconds: float
+    force_recompute_from_db: bool = False
 
 
 @router.post("/step", summary="Advance simulation by N ticks of dt seconds")
@@ -152,6 +151,34 @@ async def simulate_step(req: StepRequest):
     cooldown_rejected:  list[dict] = []
 
     async with simulation_state.lock:
+        if req.force_recompute_from_db:
+            # Extreme test mode: recompute from DB
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"{GO_ADAPTER_URL}/objects", timeout=5.0)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    # Update state from DB
+                    for sat_data in data.get("satellites", []):
+                        sat = simulation_state.get_or_create_satellite(sat_data["id"])
+                        sat.position = [sat_data["r"]["x"], sat_data["r"]["y"], sat_data["r"]["z"]]
+                        sat.velocity = [sat_data["v"]["x"], sat_data["v"]["y"], sat_data["v"]["z"]]
+                        if "fuel_kg" in sat_data:
+                            sat.fuel_kg = sat_data["fuel_kg"]
+                        if "status" in sat_data:
+                            sat.status = sat_data["status"]
+                        sat.last_updated = datetime.fromisoformat(sat_data.get("updated_at", simulation_state.sim_time.isoformat())).replace(tzinfo=timezone.utc)
+                    for deb_data in data.get("debris", []):
+                        deb = simulation_state.get_or_create_debris(deb_data["id"], 
+                            [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]], 
+                            [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]])
+                        deb.position = [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]]
+                        deb.velocity = [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]]
+                        deb.last_updated = datetime.fromisoformat(deb_data.get("updated_at", simulation_state.sim_time.isoformat())).replace(tzinfo=timezone.utc)
+            except Exception as e:
+                # Log but continue
+                print(f"Failed to recompute from DB: {e}")
+
         if not simulation_state.satellites and not simulation_state.debris:
             raise HTTPException(
                 status_code=409,
@@ -180,8 +207,21 @@ async def simulate_step(req: StepRequest):
 
                 pos = np.array(sat.position)
                 vel = np.array(sat.velocity)
-                dv_eci    = rtn_to_eci(np.array(burn.delta_v_rtn), pos, vel)
-                dv_mag    = float(np.linalg.norm(dv_eci))
+                state = np.concatenate([pos, vel])
+                dv_eci = rtn_to_eci(np.array(burn.delta_v_rtn), state)
+                dv_mag = float(np.linalg.norm(dv_eci))
+
+                # Validate burn limit
+                try:
+                    validate_burn_limit(dv_mag)
+                except BurnLimitExceeded as e:
+                    cooldown_rejected.append({
+                        "burn_id":     burn.burn_id,
+                        "satellite_id": burn.satellite_id,
+                        "reason":      str(e),
+                    })
+                    continue
+                
                 burned    = fuel_consumed(sat.mass_kg, dv_mag)
 
                 sat.fuel_kg       = max(0.0, sat.fuel_kg - burned)
@@ -201,12 +241,15 @@ async def simulate_step(req: StepRequest):
 
             # ── 2. Propagate satellites ───────────────────────────────────
             for sat in simulation_state.satellites.values():
-                result = propagate_rk4(sat.eci, dt_step, dt_step)
+                if INTEGRATOR_METHOD == "rk2":
+                    result = propagate_rk2(sat.eci, dt_step, dt_step)
+                    nom = propagate_rk2(sat.nominal_eci, dt_step, dt_step)
+                else:
+                    result = propagate_rk4(sat.eci, dt_step, dt_step)
+                    nom = propagate_rk4(sat.nominal_eci, dt_step, dt_step)
+
                 sat.position = result[-1][:3]
                 sat.velocity = result[-1][3:]
-
-                # ── 3. Propagate nominal ghost (no maneuvers ever) ────────
-                nom = propagate_rk4(sat.nominal_eci, dt_step, dt_step)
                 sat.nominal_slot["position"] = nom[-1][:3]
                 sat.nominal_slot["velocity"] = nom[-1][3:]
 
@@ -217,8 +260,21 @@ async def simulate_step(req: StepRequest):
                     if sat.status not in ("maneuver", "safe-hold", "comms-loss"):
                         sat.status = "nominal"
                 else:
-                    if sat.status == "nominal":
-                        sat.status = "nominal"  # drifted but not flagged as outage yet
+                    # Out-of-box drift triggers service outage state
+                    if sat.status != "safe-hold":
+                        sat.status = "safe-hold"
+                        # Schedule immediate recovery burn to nominal slot
+                        rec = plan_recovery_burn(
+                            sat.position, sat.velocity,
+                            sat.nominal_slot["position"], sat.nominal_slot["velocity"],
+                        )
+                        if rec and rec["delta_v_magnitude_kms"] > 0:
+                            sim_burn = ScheduledBurn(
+                                satellite_id=sat.satellite_id,
+                                delta_v_rtn=rec["delta_v_rtn"],
+                                burn_time=simulation_state.sim_time + timedelta(seconds=60),
+                            )
+                            simulation_state.enqueue_burn(sim_burn)
 
                 # Reset maneuver flag after tick
                 if sat.status == "maneuver":
@@ -228,7 +284,10 @@ async def simulate_step(req: StepRequest):
 
             # ── 5. Propagate debris ───────────────────────────────────────
             for deb in simulation_state.debris.values():
-                result = propagate_rk4(deb.eci, dt_step, dt_step)
+                if INTEGRATOR_METHOD == "rk2":
+                    result = propagate_rk2(deb.eci, dt_step, dt_step)
+                else:
+                    result = propagate_rk4(deb.eci, dt_step, dt_step)
                 deb.position = result[-1][:3]
                 deb.velocity = result[-1][3:]
                 simulation_state.log_state(deb.debris_id, t_now, deb.eci)
@@ -260,16 +319,6 @@ async def simulate_step(req: StepRequest):
                 miss_distance_km=c["miss_distance_km"],
                 issued_at=simulation_state.sim_time,
             ))
-
-        # ── 8. Decision layer — autonomous maneuver scheduling ────────────
-        global _fleet
-        if not _fleet:
-            _fleet = init_fleet_from_sim(simulation_state)
-        try:
-            decision_step(simulation_state, simulation_state.sim_time, _fleet)
-        except Exception as _de:
-            import logging
-            logging.getLogger(__name__).warning("decision_step error: %s", _de)
 
         # Build response snapshot
         sat_snapshot = {
@@ -335,6 +384,18 @@ async def get_sim_state():
             "debris_count":        len(simulation_state.debris),
             "pending_burns":       len(simulation_state.maneuver_queue),
             "active_cdm_warnings": len(simulation_state.active_cdm_warnings),
+        }
+
+
+@router.get("/config", summary="Simulation configuration and dynamic population stats")
+async def get_sim_config():
+    async with simulation_state.lock:
+        return {
+            "satellite_count": len(simulation_state.satellites),
+            "debris_count": len(simulation_state.debris),
+            "station_keeping_radius_km": STATION_KEEP_KM,
+            "burn_cooldown_s": BURN_COOLDOWN_S,
+            "integrator": INTEGRATOR_METHOD,
         }
 
 
@@ -445,39 +506,6 @@ async def get_snapshot():
                 risk_pairs.setdefault(sid, conjs[0]["object_b_id"])
 
         # ── Satellites ────────────────────────────────────────────────────
-        # Pre-compute maneuver trajectory previews per satellite
-        # For each satellite with pending burns, propagate the post-burn path
-        # using RK4 for ~1 orbit and return as a list of ECI waypoints.
-        maneuver_trajectories: dict[str, list[list[float]]] = {}
-        pending_by_sat: dict[str, list] = {}
-        for burn in simulation_state.maneuver_queue:
-            if not burn.executed:
-                pending_by_sat.setdefault(burn.satellite_id, []).append(burn)
-
-        for sid, burns in pending_by_sat.items():
-            sat = simulation_state.satellites.get(sid)
-            if not sat:
-                continue
-            try:
-                # Apply first pending burn to get post-burn state
-                pos = np.array(sat.position)
-                vel = np.array(sat.velocity)
-                first_burn = burns[0]
-                dv_eci = rtn_to_eci(np.array(first_burn.delta_v_rtn), pos, vel)
-                post_vel = vel + dv_eci
-                post_state = pos.tolist() + post_vel.tolist()
-
-                # Propagate ~1 orbit (90 min) at 60s steps → 90 waypoints
-                traj_pts: list[list[float]] = [pos.tolist()]
-                state_vec = post_state[:]
-                for _ in range(90):
-                    result = propagate_rk4(state_vec, 60.0, 60.0)
-                    state_vec = result[-1]
-                    traj_pts.append(state_vec[:3])
-                maneuver_trajectories[sid] = traj_pts
-            except Exception:
-                pass  # skip on any error — trajectory preview is non-critical
-
         satellites_out = []
         for sid, sat in simulation_state.satellites.items():
             r = _orbital_radius(sat.position)
@@ -507,8 +535,6 @@ async def get_snapshot():
                 "collisionRisk":    sid in risk_pairs,
                 "riskTarget":       risk_pairs.get(sid),
                 "conjunctions":     sat_conjunctions.get(sid, []),
-                "maneuverTrajectory": maneuver_trajectories.get(sid),
-                "hasPendingBurns":  sid in pending_by_sat,
             })
 
         # ── Debris ────────────────────────────────────────────────────────
@@ -520,7 +546,6 @@ async def get_snapshot():
             speed_kms = _math.sqrt(sum(v * v for v in deb.velocity))
             orbit_speed = speed_kms / r if r > 0 else 0.0
             debris_out.append({
-                "id": did,
                 "x": deb.position[0], "y": deb.position[1], "z": deb.position[2],
                 "vx": deb.velocity[0], "vy": deb.velocity[1], "vz": deb.velocity[2],
                 "r": round(r, 3),
@@ -547,4 +572,59 @@ async def get_snapshot():
             "debris":       debris_out,
             "cdm_warnings": cdm_out,
         }
+
+
+# ── /api/simulate/init ────────────────────────────────────────────────────────
+
+class InitObject(BaseModel):
+    id: str
+    object_type: str          # "satellite" | "debris"
+    position: list[float]     # ECI km
+    velocity: list[float]     # km/s
+    fuel_kg: float = 0.5
+    mass_kg: float = 4.0
+    status: str = "nominal"
+
+
+class InitRequest(BaseModel):
+    objects: list[InitObject]
+
+
+@router.post("/init", summary="Seed simulation state from frontend initial objects")
+async def init_simulation(req: InitRequest):
+    """
+    Called once by usePhysicsSimulation on mount.
+    Registers all satellites and debris into SimulationState.
+    """
+    from state_store import ScheduledBurn
+    async with simulation_state.lock:
+        # Clear existing state for a clean init
+        simulation_state.satellites.clear()
+        simulation_state.debris.clear()
+        simulation_state.maneuver_queue.clear()
+        simulation_state.cdm_warnings.clear()
+        simulation_state.trajectory_log.clear()
+
+        for obj in req.objects:
+            if obj.object_type == "satellite":
+                sat = simulation_state.get_or_create_satellite(obj.id)
+                sat.position = list(obj.position)
+                sat.velocity = list(obj.velocity)
+                sat.fuel_kg = obj.fuel_kg
+                sat.initial_fuel_kg = obj.fuel_kg
+                sat.mass_kg = obj.mass_kg
+                sat.status = obj.status  # type: ignore[assignment]
+                sat.nominal_slot = {
+                    "position": list(obj.position),
+                    "velocity": list(obj.velocity),
+                }
+            else:
+                simulation_state.get_or_create_debris(
+                    obj.id, list(obj.position), list(obj.velocity)
+                )
+
+    return {"ok": True, "satellites": len(simulation_state.satellites),
+            "debris": len(simulation_state.debris),
+            "initialized": len(req.objects)}
+
 

@@ -17,16 +17,32 @@ const DIRECTIONS: { value: BurnDirection; label: string; icon: string }[] = [
   { value: 'prograde', label: 'PROGRADE', icon: '▲' },
   { value: 'retrograde', label: 'RETROGRADE', icon: '▼' },
   { value: 'radial', label: 'RADIAL', icon: '◆' },
+  { value: 'anti-radial', label: 'ANTI-RADIAL', icon: '◇' },
+  { value: 'normal', label: 'NORMAL', icon: '↥' },
+  { value: 'anti-normal', label: 'ANTI-NORMAL', icon: '↧' },
 ];
 
-// Fuel cost: ~2% per 0.1 km/s delta-V
-const fuelCost = (dv: number) => Math.round(dv * 20);
+// Accurate fuel consumption using Tsiolkovsky rocket equation
+// ∆m = m_current * (1 - exp(-|∆v| / (Isp * g0)))
+const SPECIFIC_IMPULSE = 300.0; // seconds
+const G0 = 9.80665e-3; // km/s²
+
+function fuelConsumed(massKg: number, deltaVKms: number): number {
+  if (massKg <= 0 || deltaVKms <= 0) return 0;
+  const expTerm = Math.exp(-deltaVKms / (SPECIFIC_IMPULSE * G0));
+  return Math.max(0, massKg * (1 - expTerm));
+}
+
+// Fuel cost calculation using actual physics
+const fuelCost = (satellite: Satellite, dv: number) => fuelConsumed(satellite.mass_kg, dv);
 
 // Predicted orbit radius change based on direction and delta-V
 const predictedRadius = (sat: Satellite, dv: number, dir: BurnDirection) => {
   if (dir === 'prograde') return sat.orbitRadius + dv * 200;
   if (dir === 'retrograde') return sat.orbitRadius - dv * 200;
-  return sat.orbitRadius; // radial doesn't change radius much
+  if (dir === 'radial') return sat.orbitRadius + Math.sign(dv) * 20; // small transient effect
+  if (dir === 'anti-radial') return sat.orbitRadius - Math.sign(dv) * 20;
+  return sat.orbitRadius;
 };
 
 export default function ManeuverModal({ satellite, onConfirm, onCancel }: Props) {
@@ -35,7 +51,7 @@ export default function ManeuverModal({ satellite, onConfirm, onCancel }: Props)
   const [deltaV, setDeltaV] = useState(0.5);
   const [scheduledHour, setScheduledHour] = useState(0);
 
-  const cost = fuelCost(deltaV);
+  const cost = fuelCost(satellite, deltaV);
   const insufficient = cost > satellite.fuel;
   const newRadius = predictedRadius(satellite, deltaV, direction);
   const newAlt = (newRadius - 6371).toFixed(0);
