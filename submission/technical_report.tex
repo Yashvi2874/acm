@@ -1,55 +1,1273 @@
-\documentclass[11pt]{article}
-\usepackage[margin=1in]{geometry}
+\documentclass[11pt, a4paper]{article}
+
+% -------------------------------------------------------
+% Packages
+% -------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.5cm, top=3cm, bottom=3cm]{geometry}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{titling}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
 \usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{xcolor}
 \usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{tcolorbox}
+\usepackage{mdframed}
+\usepackage[protrusion=true,expansion=false]{microtype}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{colortbl}
+\usepackage{lmodern}
+\usepackage{varwidth}
+\usepackage{calc}
 
-\title{ACM: Autonomous Constellation Manager}
-\author{}
-\date{}
+% -------------------------------------------------------
+% Color Definitions
+% -------------------------------------------------------
+\definecolor{spaceblue}{RGB}{10, 25, 70}
+\definecolor{orbitcyan}{RGB}{0, 140, 200}
+\definecolor{stargray}{RGB}{230, 233, 240}
+\definecolor{alertred}{RGB}{200, 40, 40}
+\definecolor{warnorange}{RGB}{210, 120, 0}
+\definecolor{safegreen}{RGB}{30, 140, 60}
+\definecolor{codebg}{RGB}{245, 247, 250}
+\definecolor{codeborder}{RGB}{180, 195, 220}
+\definecolor{headingblue}{RGB}{15, 50, 120}
+\definecolor{accentgold}{RGB}{200, 160, 0}
 
+% -------------------------------------------------------
+% Hyperref Setup
+% -------------------------------------------------------
+\hypersetup{
+    colorlinks=true,
+    linkcolor=orbitcyan,
+    urlcolor=orbitcyan,
+    citecolor=orbitcyan,
+    pdftitle={Orbital Debris Avoidance \& Constellation Management System},
+    pdfauthor={Yashasvi Gupta, Aastha Shah, T Vishal, Sai Parcha},
+    breaklinks=true
+}
+
+% -------------------------------------------------------
+% Section Formatting
+% -------------------------------------------------------
+\titleformat{\section}
+  {\color{headingblue}\Large\bfseries}
+  {\thesection}{1em}{}
+  [\color{orbitcyan}\rule{\linewidth}{1.5pt}]
+
+\titleformat{\subsection}
+  {\color{headingblue}\large\bfseries}
+  {\thesubsection}{1em}{}
+
+\titleformat{\subsubsection}
+  {\color{headingblue}\normalsize\bfseries}
+  {\thesubsubsection}{1em}{}
+
+\titlespacing*{\section}{0pt}{18pt}{8pt}
+\titlespacing*{\subsection}{0pt}{12pt}{4pt}
+\titlespacing*{\subsubsection}{0pt}{8pt}{2pt}
+
+% -------------------------------------------------------
+% Code Listing Style
+% -------------------------------------------------------
+\lstdefinestyle{gostyle}{
+    language=C,
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\scriptsize,
+    keywordstyle=\color{orbitcyan}\bfseries,
+    stringstyle=\color{safegreen},
+    commentstyle=\color{gray}\itshape,
+    numberstyle=\tiny\color{gray},
+    frame=single,
+    framesep=4pt,
+    rulecolor=\color{codeborder},
+    breaklines=true,
+    breakatwhitespace=true,
+    showstringspaces=false,
+    tabsize=2,
+    captionpos=b,
+    morekeywords={var, func, chan, go, for, range, make},
+    columns=flexible
+}
+
+\lstdefinestyle{jsonstyle}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\scriptsize,
+    stringstyle=\color{safegreen},
+    keywordstyle=\color{orbitcyan},
+    frame=single,
+    framesep=4pt,
+    rulecolor=\color{codeborder},
+    breaklines=true,
+    breakatwhitespace=true,
+    showstringspaces=false,
+    tabsize=2,
+    columns=flexible
+}
+
+% -------------------------------------------------------
+% tcolorbox environments
+% -------------------------------------------------------
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{layerbox}[2][]{
+    enhanced,
+    title=#2,
+    colback=stargray,
+    colframe=spaceblue,
+    colbacktitle=spaceblue,
+    coltitle=white,
+    fonttitle=\bfseries,
+    boxrule=1.2pt,
+    arc=4pt,
+    top=6pt, bottom=6pt, left=8pt, right=8pt,
+    #1
+}
+
+\newtcolorbox{alertbox}[1][]{
+    enhanced,
+    colback=red!8,
+    colframe=alertred,
+    boxrule=1pt,
+    arc=3pt,
+    left=8pt, right=8pt, top=4pt, bottom=4pt,
+    #1
+}
+
+\newtcolorbox{infobox}[1][]{
+    enhanced,
+    colback=orbitcyan!8,
+    colframe=orbitcyan,
+    boxrule=1pt,
+    arc=3pt,
+    left=8pt, right=8pt, top=4pt, bottom=4pt,
+    #1
+}
+
+% -------------------------------------------------------
+% Header / Footer
+% -------------------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{headingblue}\textbf{National Space Hackathon 2026}}
+\fancyhead[R]{\small\color{headingblue}Orbital Debris Avoidance System}
+\fancyfoot[C]{\small\color{gray}\thepage}
+\fancyfoot[R]{\small\color{gray}April 3, 2026}
+\renewcommand{\headrulewidth}{1pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{orbitcyan}\leaders\hrule height \headrulewidth\hfill}}
+
+% -------------------------------------------------------
+% Line Spacing
+% -------------------------------------------------------
+\setstretch{1.4}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+% Prevent overfull hboxes in code blocks
+\setlength{\emergencystretch}{3em}
+
+% -------------------------------------------------------
+% Utility commands
+% -------------------------------------------------------
+\newcommand{\keyword}[1]{\textcolor{orbitcyan}{\textbf{#1}}}
+\newcommand{\tech}[1]{\texttt{\textcolor{headingblue}{#1}}}
+\newcommand{\critical}[1]{\textcolor{alertred}{\textbf{#1}}}
+\newcommand{\safe}[1]{\textcolor{safegreen}{\textbf{#1}}}
+
+% -------------------------------------------------------
+% Document
+% -------------------------------------------------------
 \begin{document}
-\maketitle
 
-\section{Overview}
-ACM is a telemetry-driven orbital operations platform for constellation state propagation, conjunction assessment, maneuver scheduling, and real-time visualization.
+% ================================================================
+% TITLE PAGE
+% ================================================================
+\begin{titlepage}
+  \pagecolor{spaceblue}
+  \color{white}
+  \centering
+  \vspace*{2cm}
 
-\section{State Model}
-Each object is represented in the Earth-Centered Inertial frame by
+  {\fontsize{11}{14}\selectfont\color{accentgold}\textbf{NATIONAL SPACE HACKATHON 2026}}\\[0.4cm]
+  {\color{orbitcyan}\rule{0.6\linewidth}{1.5pt}}\\[1.0cm]
+
+  {\fontsize{24}{30}\selectfont\bfseries Orbital Debris Avoidance}\\[0.3cm]
+  {\fontsize{24}{30}\selectfont\bfseries \& Constellation Management System}\\[1.2cm]
+
+  {\color{stargray}\large A Modular, Real-Time Space Object Monitoring Pipeline}\\[2.5cm]
+
+  % Team
+  {\color{accentgold}\large\bfseries Team Members}\\[0.4cm]
+  \begin{tabular}{c}
+    {\large Yashasvi Gupta} \\[4pt]
+    {\large Aastha Shah} \\[4pt]
+    {\large T Vishal} \\[4pt]
+    {\large Sai Parcha} \\
+  \end{tabular}
+
+  \vfill
+
+  {\color{stargray} April 3, 2026}\\[0.3cm]
+  {\color{orbitcyan}\rule{0.4\linewidth}{0.8pt}}\\[0.4cm]
+
+  \begin{tabular}{ll}
+    \color{stargray}\textbf{GitHub Repo:} &
+      \href{https://github.com/Yashvi2874/acm}{\color{orbitcyan}\texttt{github.com/Yashvi2874/acm}} \\[4pt]
+    \color{stargray}\textbf{Drive Link:} &
+      \href{https://drive.google.com/drive/folders/1weXqaLgwXBDuzULpHXSRx9SagEeRGceT}
+           {\color{orbitcyan}\texttt{Google Drive Folder}} \\
+  \end{tabular}
+
+\end{titlepage}
+\nopagecolor
+
+% ================================================================
+% TABLE OF CONTENTS
+% ================================================================
+\tableofcontents
+\newpage
+
+% ================================================================
+% INTRODUCTION
+% ================================================================
+\section{Introduction}
+
+This project is an ambitious undertaking aimed at tackling the complex problem of
+\keyword{satellite orbit maneuvering}, \keyword{debris avoidance}, and \keyword{orbital efficiency}.
+Significant effort was invested in designing the architecture, exploring various approaches, and
+understanding the underlying orbital dynamics --- deepening our appreciation for the challenges
+involved in real-world space systems.
+
+Throughout this journey, the team enhanced technical knowledge in astrodynamics, distributed
+systems, and real-time data pipelines, while also developing a strong curiosity and passion for the
+domain. Although the problem space extends far beyond the scope of a limited hackathon timeline,
+the system presented here reflects the best of what was achievable within the deadline.
+
+\begin{infobox}
+\textbf{Mission Statement:} To build a scalable, modular pipeline for real-time space object
+monitoring, autonomous collision risk assessment, and fuel-optimal maneuver planning ---
+enabling safer and more sustainable operations in Earth's orbit.
+\end{infobox}
+
+% ================================================================
+% GENERAL ARCHITECTURE
+% ================================================================
+\section{General Architecture}
+
+The system is designed as a \keyword{modular, distributed pipeline} for real-time space object
+monitoring and analysis, consisting of three primary processing layers and an interactive
+visualization interface. At the core lies a centralized data layer that ensures seamless
+communication and decoupling between all components.
+
+\subsection{Architectural Overview}
+
+\begin{layerbox}{System Layers}
+\begin{enumerate}[leftmargin=1.5cm, label=\textbf{Layer \arabic*.}]
+  \item \textbf{Data Ingestion} --- High-performance telemetry reception using Go
+  \item \textbf{Orbit Prediction \& Collision Risk} --- Physics-based propagation and probabilistic risk modeling in Python
+  \item \textbf{Maneuvering} --- Autonomous, fuel-optimal avoidance strategy selection
+\end{enumerate}
+\end{layerbox}
+
+\subsection{Component Pipeline}
+
 \[
-S(t) = [x, y, z, v_x, v_y, v_z]^T
+\texttt{Telemetry Sources}
+\;\longrightarrow\;
+\underbrace{\texttt{Go REST API}}_{\text{Layer 1}}
+\;\longrightarrow\;
+\texttt{MongoDB Atlas}
+\;\longrightarrow\;
+\underbrace{\texttt{Python Backend}}_{\text{Layer 2 \& 3}}
+\;\longrightarrow\;
+\texttt{Front-end}
 \]
-with position in kilometers and velocity in kilometers per second.
 
-\section{Propagation}
-The propagated dynamics are
+\subsection{Key Design Principles}
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item \textbf{Decoupled Components:} MongoDB Atlas acts as the shared data backbone, allowing each layer to read and write data independently without tight coupling.
+  \item \textbf{Scalability:} The worker-pool ingestion model and clustering-based risk engine ensure performance under high telemetry volume.
+  \item \textbf{Real-time Capability:} Adaptive timestep propagation and parallel processing pipelines support live decision-making.
+  \item \textbf{Modular Extensibility:} The layered design allows future integration of reinforcement learning-based planners or AI-driven decision modules.
+\end{itemize}
+
+% ================================================================
+% LAYER 1
+% ================================================================
+\section{Layer 1: Data Ingestion}
+
+\subsection{Complete Flow}
+
+The ingestion layer is the system's entry point. Telemetry data arrives from two primary sources:
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item \textbf{Satellites} --- orbital state vectors broadcast in near real-time
+  \item \textbf{Debris Tracking Systems} --- ground-based radar and optical telescope feeds
+\end{itemize}
+
+\subsubsection{Telemetry Data Format}
+
+Each object is represented as a JSON document containing its identifier, 3D position vector
+$\vec{r}$, velocity vector $\vec{v}$, object type, and timestamp:
+
+\begin{lstlisting}[style=jsonstyle, caption={Sample Telemetry Payload (POST /api/telemetry)}]
+{
+  "_id":        "DEB-99421",
+  "r":          { "x": 4500.2, "y": -2100.5, "z": 4800.1 },
+  "v":          { "x": -1.25,  "y": 6.84,    "z": 3.12   },
+  "type":       "DEBRIS",
+  "updated_at": "2026-04-03T14:22:00Z"
+}
+\end{lstlisting}
+
+\subsubsection{Processing Pipeline}
+
+\begin{center}
+\texttt{API Handler} $\;\rightarrow\;$ \texttt{Channel Queue (1000 cap.)} $\;\rightarrow\;$
+\texttt{Worker Pool (32 workers)} $\;\rightarrow\;$ \texttt{MongoDB Writer}
+\end{center}
+
+The four steps within this pipeline are:
+
+\begin{enumerate}[leftmargin=1.5cm]
+  \item \textbf{Receive:} REST endpoint \tech{POST /api/telemetry} validates and deserializes the payload.
+  \item \textbf{Queue:} The telemetry object is pushed into a buffered channel (capacity 1000), decoupling ingestion from processing.
+  \item \textbf{Process:} Each of the 32 goroutine workers normalizes spatial coordinates and validates value ranges.
+  \item \textbf{Persist:} Processed records are upserted into MongoDB Atlas for consumption by downstream layers.
+\end{enumerate}
+
+\subsection{Internal Go Architecture}
+
+\subsubsection{Channel (Queue)}
+
+\begin{lstlisting}[style=gostyle, caption={Buffered Telemetry Channel}]
+var telemetryQueue = make(chan Telemetry, 1000)
+\end{lstlisting}
+
+Acts as a high-throughput buffer between incoming requests and asynchronous processing,
+preventing API blocking under load spikes.
+
+\subsubsection{Worker Pool}
+
+\begin{lstlisting}[style=gostyle, caption={32-Worker Goroutine Pool}]
+for i := 0; i < 32; i++ {
+    go worker(telemetryQueue)
+}
+\end{lstlisting}
+
+\subsubsection{Worker Function}
+
+\begin{lstlisting}[style=gostyle, caption={Worker Processing Loop}]
+func worker(queue chan Telemetry) {
+    for data := range queue {
+        processed := preprocess(data)
+        saveToMongo(processed)
+    }
+}
+\end{lstlisting}
+
+\subsubsection{API Handler}
+
+\begin{lstlisting}[style=gostyle, caption={Gin HTTP Handler}]
+func ReceiveTelemetry(c *gin.Context) {
+    var data Telemetry
+    c.BindJSON(&data)
+    telemetryQueue <- data   // non-blocking push to workers
+    c.JSON(200, gin.H{"status": "queued"})
+}
+\end{lstlisting}
+
+\subsection{Technology Justification}
+
+\subsubsection{Why Go?}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\bfseries}p{3.2cm} X}
+\toprule
+\rowcolor{spaceblue}\textcolor{white}{\textbf{Feature}} & \textcolor{white}{\textbf{Benefit}} \\
+\midrule
+Goroutines & Lightweight ($\approx$2\,KB each); thousands can run simultaneously for parallel throughput \\
+\midrule
+Scheduler & Automatically distributes work across CPU cores; no manual thread management \\
+\midrule
+Non-blocking I/O & While one worker awaits a DB write, others continue processing --- ideal CPU + I/O balance \\
+\midrule
+Burst Handling & Telemetry spikes (e.g., entering coverage zones) are absorbed by the buffered channel without API degradation \\
+\bottomrule
+\end{tabularx}
+\caption{Rationale for choosing Go in the ingestion layer}
+\end{table}
+
+\subsubsection{Why MongoDB?}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\bfseries}p{3.2cm} X}
+\toprule
+\rowcolor{spaceblue}\textcolor{white}{\textbf{Feature}} & \textcolor{white}{\textbf{Benefit}} \\
+\midrule
+Flexible Schema & Object fields evolve over time; Mongo handles dynamic structures naturally \\
+\midrule
+JSON-Native & Telemetry is already JSON-like; no transformation overhead \\
+\midrule
+Fast Writes & Optimized for insert-heavy, high-rate workloads \\
+\midrule
+Spatial Indexing & Built-in support for $(x, y, z)$ coordinate queries; future-ready for geo-spatial features \\
+\bottomrule
+\end{tabularx}
+\caption{Rationale for choosing MongoDB as the central data layer}
+\end{table}
+
+\subsection{Layer Summary}
+
+\begin{layerbox}[colframe=safegreen]{Layer 1 Summary}
+The ingestion layer uses Go to handle high-throughput telemetry streams via a REST API.
+Incoming data is asynchronously processed using a \textbf{32-worker goroutine pool},
+ensuring efficient parallel handling of continuous satellite and debris telemetry.
+Processed records are persisted in \textbf{MongoDB Atlas}, acting as the centralized,
+schema-flexible data backbone for all downstream components.
+\end{layerbox}
+
+% ================================================================
+% LAYER 2
+% ================================================================
+\section{Layer 2: Orbit Prediction and Risk of Collision}
+
+\subsection{Complete Flow}
+
+This layer transforms raw telemetry into actionable collision intelligence through a multi-step
+physics-based pipeline.
+
+\subsubsection{Step 1 --- Data Retrieval}
+
+Satellite and debris telemetry --- including position vectors $\vec{r}$ and velocity vectors
+$\vec{v}$ --- are fetched from MongoDB:
+
+\begin{lstlisting}[style=jsonstyle, caption={Satellite State Vector from MongoDB}]
+{
+  "_id":        "SAT-001",
+  "r":          { "x": 4200.5, "y": -1800.2, "z": 5100.7 },
+  "v":          { "x": -2.1,   "y": 6.2,     "z": 2.9    },
+  "type":       "SATELLITE",
+  "updated_at": "2026-04-03T14:22:00Z"
+}
+\end{lstlisting}
+
+\subsubsection{Step 2 --- Threat Pre-Clustering}
+
+Rather than comparing every satellite with every debris object (a naive $O(N^2)$ approach),
+nearby debris objects are first grouped into spatial clusters using a \keyword{KD-Tree}:
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item Reduces pairwise comparisons to $O(N \log N)$
+  \item Converts object-level comparison into cluster-level filtering
+  \item Implemented via spatial indexing with \tech{scipy.spatial.KDTree}
+\end{itemize}
+
+\subsubsection{Step 3 --- Relative Motion Modeling}
+
+For each satellite--cluster pair, motion is transformed into the \keyword{RTN (Radial-Transverse-Normal)} reference frame:
+
 \[
-\ddot{\vec r} = -\frac{\mu}{|\vec r|^3}\vec r + \vec a_{J2}
+  \vec{r}_{\text{rel}} = \vec{r}_{\text{deb}} - \vec{r}_{\text{sat}}
 \]
-where $\mu = 398600.4418 \ \text{km}^3/\text{s}^2$, $R_E = 6378.137 \ \text{km}$, and $J_2 = 1.08263 \times 10^{-3}$.
 
-Numerical integration is performed with RK4, with bounded substeps for stability and repeatability.
+This simplifies trajectory comparison and reduces computational complexity by working in a
+co-moving coordinate system centered on the satellite.
 
-\section{Conjunction Assessment}
-The system uses KD-tree screening to reduce pairwise comparisons, then refines candidate pairs by evaluating closest approach. A critical event is defined by
+\subsubsection{Step 4 --- Trajectory Propagation}
+
+Future positions are predicted over a configurable time window using:
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item \textbf{RK4 numerical integration} --- fourth-order Runge--Kutta for high-accuracy orbital propagation
+  \item \textbf{J2 perturbation modeling} --- accounts for Earth's oblateness (dominant low-Earth-orbit perturbation)
+  \item \textbf{Adaptive timestep control} --- finer timestep resolution near predicted conjunction zones
+\end{itemize}
+
+\subsubsection{Step 5 --- Closest Approach Computation}
+
+The system computes the \keyword{Time of Closest Approach (TCA)} and minimum separation distance:
+
 \[
-|\vec r_{sat}(t) - \vec r_{deb}(t)| < 0.100 \ \text{km}.
+  d(t) = \left|\vec{r}_{\text{sat}}(t) - \vec{r}_{\text{deb}}(t)\right|
+  \qquad
+  d_{\min} = \min_{t \in [t_0,\, t_f]} d(t)
 \]
 
-\section{Maneuver Logic}
-Burns are planned in RTN and rotated to ECI through
+\subsubsection{Step 6 --- Collision Probability Estimation}
+
+Beyond geometric distance, a probabilistic collision risk is computed consistent with real-world
+Conjunction Data Message (CDM) standards:
+
 \[
-\Delta \vec v_{ECI} = [\hat R \ \hat T \ \hat N]\Delta \vec v_{RTN}.
+  P_c = f\!\left(d_{\min},\; v_{\text{rel}},\; \sigma\right)
 \]
 
-Fuel depletion is modeled with the Tsiolkovsky equation:
+where $d_{\min}$ is the closest approach distance, $v_{\text{rel}}$ is the relative velocity at
+TCA, and $\sigma$ encodes the positional covariance (uncertainty ellipsoid).
+
+\subsubsection{Step 7 --- Risk Scoring}
+
+Each conjunction event receives a composite risk score that incorporates both physics and
+operational context:
+
 \[
-\Delta m = m_{current}\left(1 - e^{-|\Delta \vec v|/(I_{sp} g_0)}\right).
+  \text{Risk} \;=\;
+  w_1 \cdot \frac{1}{d_{\min}}
+  \;+\; w_2 \cdot v_{\text{rel}}
+  \;+\; w_3 \cdot P_c
+  \;+\; w_4 \cdot \text{priority}
 \]
 
-\section{Persistence and Visualization}
-Incoming telemetry is treated as the latest authoritative baseline. ACM propagates object coordinates every minute, persists updated positions to the database, and only overwrites satellite velocity in persistent storage after actual maneuvers. The frontend polls these updated states and renders orbiting satellites and debris from the refreshed coordinates.
+The weight vector $\{w_1, w_2, w_3, w_4\}$ is tunable to reflect mission requirements.
 
-\section{Submission Note}
-The repository root contains a grading-ready Dockerfile based on \texttt{ubuntu:22.04} that binds the API to \texttt{0.0.0.0:8000}.
+\subsubsection{Step 8 --- Alert Generation}
+
+Risk thresholds trigger structured alerts:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Level} & \textbf{Condition} & \textbf{Colour} \\
+\midrule
+\critical{CRITICAL} & $d_{\min} < 0.1\;\text{km}$ & \cellcolor{red!20} Red \\
+\textbf{WARNING} & $d_{\min} < 5\;\text{km}$ & \cellcolor{orange!25} Orange \\
+\safe{NOMINAL} & $d_{\min} \geq 5\;\text{km}$ & \cellcolor{green!15} Green \\
+\bottomrule
+\end{tabular}
+\caption{Alert Threshold Levels}
+\end{table}
+
+\begin{lstlisting}[style=jsonstyle, caption={Sample Alert / CDM Output}]
+{
+  "satellite_id":  "SAT-1",
+  "threat_id":     "DEB-45",
+  "min_distance":  120,
+  "Pc":            0.012,
+  "risk_score":    0.87,
+  "priority":      "HIGH"
+}
+\end{lstlisting}
+
+\subsubsection{Step 9 --- Result Storage}
+
+Outputs persisted back to MongoDB include:
+\begin{itemize}[leftmargin=1.5cm]
+  \item Collision alerts (CDM format)
+  \item Trajectory prediction arrays
+  \item Risk scores and $P_c$ values
+\end{itemize}
+
+\subsection{Technology Stack}
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item \tech{Python} with \tech{FastAPI} backend
+  \item \tech{NumPy} / \tech{SciPy} for numerical computation
+  \item \tech{scipy.spatial.KDTree} for spatial indexing
+\end{itemize}
+
+\subsection{Layer Summary}
+
+\begin{layerbox}[colframe=safegreen]{Layer 2 Summary}
+This layer transforms raw telemetry into actionable collision intelligence by combining
+\textbf{KD-Tree spatial clustering}, \textbf{RK4 + J2 physics propagation}, and
+\textbf{probabilistic risk modeling}. Complexity is reduced from $O(N^2)$ to $O(N \log N)$,
+enabling real-time conjunction analysis at scale.
+\end{layerbox}
+
+% ================================================================
+% LAYER 3
+% ================================================================
+\section{Layer 3: Maneuvering}
+
+\subsection{Complete Flow}
+
+This layer converts collision risk intelligence into executable, fuel-optimal avoidance maneuvers.
+
+\subsubsection{Step 1 --- Alert Consumption}
+
+Collision alerts and risk scores are read from Layer 2 output in MongoDB.
+
+\subsubsection{Step 2 --- Threat Prioritization}
+
+Threats are ranked by a composite priority function considering:
+\begin{itemize}[leftmargin=1.5cm]
+  \item Risk score $\in [0, 1]$
+  \item Collision probability $P_c$
+  \item Time-to-closest-approach (TCA)
+\end{itemize}
+
+\subsubsection{Step 3 --- Maneuver Strategy Selection}
+
+The intelligent decision layer evaluates three candidate strategies:
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\linewidth}{>{\bfseries}p{4cm} X}
+\toprule
+\rowcolor{spaceblue}\textcolor{white}{\textbf{Strategy}} & \textcolor{white}{\textbf{Description}} \\
+\midrule
+Hohmann Transfer & Bi-elliptic transfer to a safe altitude; efficient for planned avoidance \\
+\midrule
+Radial / Along-track Burn & Small in-plane burn; fastest separation before TCA \\
+\midrule
+Plane Change & Out-of-plane maneuver; used for high-inclination collision geometries \\
+\bottomrule
+\end{tabularx}
+\caption{Available Maneuver Strategies}
+\end{table}
+
+The system selects the \textbf{minimum-fuel solution} subject to time constraints.
+
+\subsubsection{Step 4 --- Delta-V Computation}
+
+The required velocity change is computed as:
+
+\[
+  \Delta V = \left|\vec{v}_{\text{target}} - \vec{v}_{\text{current}}\right|
+\]
+
+\subsubsection{Step 5 --- Burn Splitting}
+
+To protect thruster hardware and respect operational constraints:
+\begin{itemize}[leftmargin=1.5cm]
+  \item Maximum $\Delta V$ per burn: \textbf{15 m/s}
+  \item Minimum cooldown between burns: \textbf{600 s}
+  \item Excess $\Delta V$ is automatically split into a scheduled burn sequence
+\end{itemize}
+
+\subsubsection{Step 6 --- Fuel Computation}
+
+Propellant consumption is estimated using the \textbf{Tsiolkovsky Rocket Equation}:
+
+\[
+  \Delta m = m \left(1 - e^{-\dfrac{\Delta V}{I_{sp} \cdot g_0}}\right)
+\]
+
+where $I_{sp}$ is the specific impulse and $g_0 = 9.80665\;\text{m/s}^2$.
+
+\subsubsection{Step 7 --- Scheduling and Execution}
+
+Approved maneuvers are logged with full autonomy reasoning:
+
+\begin{lstlisting}[style=jsonstyle, caption={Maneuver Decision Log}]
+{
+  "selected_maneuver": "Radial Burn",
+  "reason":            "Fastest separation before TCA",
+  "fuel_cost_kg":      5.0,
+  "delta_v_ms":        12.3,
+  "burn_count":        1
+}
+\end{lstlisting}
+
+\subsection{Layer Summary}
+
+\begin{layerbox}[colframe=safegreen]{Layer 3 Summary}
+This layer converts collision risks into \textbf{optimal maneuver strategies} using physics-based
+$\Delta V$ calculations, the Tsiolkovsky fuel model, and an intelligent decision engine that
+selects the minimum-fuel solution satisfying all operational constraints. The system operates
+autonomously while producing transparent decision logs for operators.
+\end{layerbox}
+
+% ================================================================
+% VISUALIZATION & UI
+% ================================================================
+\section{Visualization and User Interface}
+
+The front-end dashboard transforms complex backend outputs into intuitive,
+decision-ready insights for satellite operators.
+
+\subsection{Real-Time Tracking}
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item Live 3D orbital display of satellite and debris objects
+  \item Collision probability $P_c$ color-coded overlays
+  \item Ground track visualization
+\end{itemize}
+
+\subsection{Decision Intelligence Panel}
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item Recommended maneuver with automated reasoning explanation
+  \item Fuel forecast and projected mission lifetime impact
+  \item Decision window countdown (time remaining before TCA)
+  \item Satellite health score dashboard
+\end{itemize}
+
+\subsection{Analytics and Monitoring}
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item CDM (Conjunction Data Message) alerts panel
+  \item Risk trend graphs over configurable time windows
+  \item Maneuver timeline and before/after trajectory preview
+  \item Fuel usage tracking across the satellite constellation
+\end{itemize}
+
+% ================================================================
+% BONUS INNOVATIONS
+% ================================================================
+\section{Bonus Innovations}
+
+\subsection{Core Enhancements}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\bfseries}p{4.8cm} X}
+\toprule
+\rowcolor{spaceblue}\textcolor{white}{\textbf{Innovation}} & \textcolor{white}{\textbf{Impact}} \\
+\midrule
+Collision Probability $P_c$ & Aligns with real-world CDM standards; enables probabilistic, not just geometric, risk assessment \\
+\midrule
+Adaptive Timestep RK4 & Higher accuracy near conjunction events without global performance penalty \\
+\midrule
+KD-Tree Spatial Filtering & Reduces complexity from $O(N^2) \to O(N \log N)$ \\
+\midrule
+Decision-Aware Risk Scoring & Integrates physics + operational priority into a single actionable metric \\
+\midrule
+Maneuver Strategy Optimizer & Multi-strategy evaluation; selects minimum-fuel solution \\
+\midrule
+Fuel-Aware Planning & Uses Tsiolkovsky equation to forecast propellant consumption \\
+\midrule
+Parallel Processing & Goroutine pool + async pipeline; high throughput at low latency \\
+\midrule
+Trajectory Caching & Avoids redundant propagation for recently computed orbits \\
+\midrule
+Early Termination Logic & Prunes low-risk pairs early; further reduces computation \\
+\midrule
+RTN Relative Motion Frame & Simplifies conjunction geometry; improves numerical stability \\
+\bottomrule
+\end{tabularx}
+\caption{Bonus Innovations and Their Impact}
+\end{table}
+
+\subsection{Advanced Decision Engine}
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item Maneuver reasoning engine with explainable outputs
+  \item Before/after maneuver trajectory prediction and comparison
+  \item Autonomous decision logs for audit and review
+  \item Risk trend analysis over historical conjunction data
+\end{itemize}
+
+% ================================================================
+% NUMERICAL METHODS --- EXPANDED
+% ================================================================
+\section{Numerical Methods and Mathematical Foundations}
+
+This section presents the complete mathematical treatment underlying each computational
+layer of the system --- from the governing equations of orbital motion through to maneuver
+optimization.
+
+% ----------------------------------------------------------------
+\subsection{Equations of Motion: The Two-Body Problem}
+% ----------------------------------------------------------------
+
+All orbital propagation in this system is grounded in the Newtonian two-body equation of motion.
+For a satellite of negligible mass orbiting Earth (mass $M_\oplus$), the governing equation is:
+
+\[
+  \ddot{\vec{r}} = -\frac{\mu}{|\vec{r}|^3}\,\vec{r}
+\]
+
+where $\vec{r} \in \mathbb{R}^3$ is the position vector in the Earth-Centred Inertial (ECI) frame,
+$\mu = GM_\oplus = 3.986004418 \times 10^5\;\text{km}^3/\text{s}^2$ is the standard gravitational
+parameter, and $|\vec{r}|$ is the orbital radius.
+
+This second-order ODE is converted to a first-order system by defining the state vector
+$\vec{X} = [\vec{r},\, \vec{v}]^\top \in \mathbb{R}^6$:
+
+\[
+  \dot{\vec{X}} =
+  \begin{bmatrix} \dot{\vec{r}} \\ \dot{\vec{v}} \end{bmatrix}
+  =
+  \begin{bmatrix} \vec{v} \\ -\dfrac{\mu}{|\vec{r}|^3}\,\vec{r} \end{bmatrix}
+  =: f(\vec{X},\, t)
+\]
+
+This state-space form $\dot{\vec{X}} = f(\vec{X}, t)$ is the direct input to the RK4 integrator
+and J2-perturbed propagator described below.
+
+\begin{layerbox}[breakable=false]{Why This Matters}
+Without the two-body equation, all orbital propagation is groundless. Every RK4 step, every
+trajectory prediction, and every TCA computation ultimately evaluates $f(\vec{X}, t)$ at its
+core. Stating this equation explicitly anchors the entire physics pipeline.
+\end{layerbox}
+
+% ----------------------------------------------------------------
+\subsection{J2 Perturbation Model}
+% ----------------------------------------------------------------
+
+The two-body model assumes a perfectly spherical Earth, which is insufficient for accurate
+low-Earth-orbit (LEO) prediction. The dominant perturbation is Earth's equatorial bulge,
+characterized by the second zonal harmonic $J_2 = 1.08263 \times 10^{-3}$.
+
+The J2 perturbing acceleration $\vec{a}_{J_2}$ appended to $\ddot{\vec{r}}$ is:
+
+\[
+  \vec{a}_{J_2} =
+  \frac{3\,\mu\,J_2\,R_\oplus^2}{2\,r^5}
+  \begin{bmatrix}
+    x \!\left(5\dfrac{z^2}{r^2} - 1\right) \\[8pt]
+    y \!\left(5\dfrac{z^2}{r^2} - 1\right) \\[8pt]
+    z \!\left(5\dfrac{z^2}{r^2} - 3\right)
+  \end{bmatrix}
+\]
+
+where $R_\oplus = 6378.137\;\text{km}$ is Earth's equatorial radius,
+$r = |\vec{r}|$, and $(x, y, z)$ are the ECI Cartesian components of $\vec{r}$.
+
+The full perturbed equation of motion becomes:
+
+\[
+  \ddot{\vec{r}} = -\frac{\mu}{r^3}\,\vec{r} + \vec{a}_{J_2}
+\]
+
+\begin{infobox}
+\textbf{Physical Significance:} J2 causes secular drift in the Right Ascension of the
+Ascending Node (RAAN) and the argument of perigee. At LEO altitudes (400--800\,km),
+ignoring J2 can introduce position errors of several kilometres per orbit --- directly
+impacting the accuracy of conjunction geometry predictions.
+\end{infobox}
+
+% ----------------------------------------------------------------
+\newpage
+\subsection{Fourth-Order Runge--Kutta (RK4) Integration}
+% ----------------------------------------------------------------
+
+The perturbed equations of motion are numerically integrated using the classical RK4 scheme.
+Given the state $\vec{X}_n$ at time $t_n$, the state at $t_{n+1} = t_n + h$ is computed as:
+
+\begin{align}
+  \vec{k}_1 &= f\!\left(\vec{X}_n,\; t_n\right) \\[4pt]
+  \vec{k}_2 &= f\!\left(\vec{X}_n + \tfrac{h}{2}\vec{k}_1,\; t_n + \tfrac{h}{2}\right) \\[4pt]
+  \vec{k}_3 &= f\!\left(\vec{X}_n + \tfrac{h}{2}\vec{k}_2,\; t_n + \tfrac{h}{2}\right) \\[4pt]
+  \vec{k}_4 &= f\!\left(\vec{X}_n + h\,\vec{k}_3,\; t_n + h\right) \\[6pt]
+  \vec{X}_{n+1} &= \vec{X}_n + \frac{h}{6}\!\left(\vec{k}_1 + 2\vec{k}_2 + 2\vec{k}_3 + \vec{k}_4\right)
+\end{align}
+
+RK4 achieves fourth-order accuracy: the local truncation error per step is
+$\mathcal{O}(h^5)$ and the global error over a fixed interval is $\mathcal{O}(h^4)$.
+This provides an excellent balance between computational cost and accuracy for orbital
+propagation over prediction windows of minutes to hours.
+
+\subsubsection{Adaptive Timestep Control}
+
+A fixed timestep $h$ is wasteful when the satellite is far from any threat (slow dynamics)
+and insufficiently accurate near a conjunction event (rapid relative motion). The system
+employs adaptive timestep control based on the instantaneous separation distance $d(t)$:
+
+\[
+  h(t) =
+  \begin{cases}
+    h_{\min} & \text{if } d(t) < d_{\text{crit}} \\[4pt]
+    h_{\max} & \text{if } d(t) > d_{\text{safe}} \\[4pt]
+    h_{\min} + (h_{\max} - h_{\min})\,\dfrac{d(t) - d_{\text{crit}}}{d_{\text{safe}} - d_{\text{crit}}} & \text{otherwise}
+  \end{cases}
+\]
+
+Typical values: $h_{\min} = 1\;\text{s}$, $h_{\max} = 60\;\text{s}$,
+$d_{\text{crit}} = 5\;\text{km}$, $d_{\text{safe}} = 100\;\text{km}$.
+This ensures high-resolution propagation precisely where accuracy matters most.
+
+% ----------------------------------------------------------------
+\subsection{RTN Reference Frame Transformation}
+% ----------------------------------------------------------------
+
+Conjunction analysis is simplified by transforming from the inertial ECI frame to the
+\keyword{RTN} (Radial--Transverse--Normal) co-moving frame centred on the primary satellite.
+
+The three orthonormal basis vectors of the RTN frame are constructed from the satellite
+state $(\vec{r}_s,\, \vec{v}_s)$:
+
+\[
+  \hat{e}_R = \frac{\vec{r}_s}{|\vec{r}_s|}
+  \qquad
+  \hat{e}_N = \frac{\vec{r}_s \times \vec{v}_s}{|\vec{r}_s \times \vec{v}_s|}
+  \qquad
+  \hat{e}_T = \hat{e}_N \times \hat{e}_R
+\]
+
+The rotation matrix from ECI to RTN is:
+
+\[
+  \mathbf{M}_{\text{ECI}\to\text{RTN}} =
+  \begin{bmatrix}
+    \hat{e}_R^\top \\[2pt]
+    \hat{e}_T^\top \\[2pt]
+    \hat{e}_N^\top
+  \end{bmatrix}
+  \in \mathbb{R}^{3\times 3}
+\]
+
+The relative position of a debris object in the RTN frame is then:
+
+\[
+  \vec{\rho} = \mathbf{M}_{\text{ECI}\to\text{RTN}}\,\left(\vec{r}_{\text{deb}} - \vec{r}_{\text{sat}}\right)
+\]
+
+Working in RTN reduces the 6-degree-of-freedom conjunction problem to a 3D relative geometry,
+simplifies closest-approach calculations, and improves numerical conditioning near the conjunction
+event.
+
+% ----------------------------------------------------------------
+\subsection{KD-Tree Spatial Indexing: Complexity Analysis}
+% ----------------------------------------------------------------
+
+\subsubsection{Naive Pairwise Screening}
+
+Without spatial indexing, determining all debris objects within a threat radius of every
+satellite requires computing all $N_s \times N_d$ pairwise distances, yielding complexity
+$\mathcal{O}(N_s \cdot N_d) = \mathcal{O}(N^2)$ for $N_s \approx N_d = N$.
+
+\subsubsection{KD-Tree Construction and Query}
+
+A \textbf{KD-Tree} is a binary space-partitioning structure built by recursively splitting the
+point set along alternating spatial axes at the median coordinate. For $N_d$ debris objects in
+$\mathbb{R}^3$:
+
+\begin{itemize}[leftmargin=1.5cm]
+  \item \textbf{Build cost:} $\mathcal{O}(N_d \log N_d)$ --- sort along each axis, split at median
+  \item \textbf{Single radius query:} $\mathcal{O}(\log N_d)$ average case --- descend the tree,
+        prune branches whose bounding boxes lie entirely outside the query sphere
+  \item \textbf{All $N_s$ satellite queries:} $\mathcal{O}(N_s \log N_d)$
+\end{itemize}
+
+Total pipeline complexity:
+
+\[
+  \underbrace{\mathcal{O}(N_d \log N_d)}_{\text{build}} + \underbrace{\mathcal{O}(N_s \log N_d)}_{\text{queries}}
+  = \mathcal{O}(N \log N)
+\]
+
+The pruning condition at each internal node with bounding box $[\vec{l},\, \vec{u}]$ for a
+query point $\vec{q}$ with radius $r$ is:
+
+\[
+  d_{\min}(\vec{q},\,\text{box}) = \sqrt{\sum_{i=1}^{3} \max\!\left(0,\, l_i - q_i,\, q_i - u_i\right)^2}
+  > r \implies \text{prune subtree}
+\]
+
+This reduces the effective candidate set from $\mathcal{O}(N)$ to $\mathcal{O}(\log N)$ per
+query, yielding the full $\mathcal{O}(N^2) \to \mathcal{O}(N \log N)$ improvement.
+
+% ----------------------------------------------------------------
+\subsection{Time of Closest Approach (TCA) Refinement}
+% ----------------------------------------------------------------
+
+After propagating both trajectories, the separation function $d(t) = |\vec{r}_s(t) - \vec{r}_d(t)|$
+is a smooth scalar function of time. The TCA is the global minimum:
+
+\[
+  t^* = \arg\min_{t \in [t_0,\, t_f]}\; d(t)
+\]
+
+The system locates $t^*$ in two stages:
+
+\paragraph{Stage 1 --- Coarse scan.} Evaluate $d(t)$ at uniform timesteps to identify the
+interval $[t_a,\, t_b]$ containing the global minimum.
+
+\paragraph{Stage 2 --- Golden-section search.} Refine within $[t_a,\, t_b]$ using the
+derivative-free golden-section method. At each iteration, two interior probe points are:
+
+\[
+  t_1 = t_a + (1 - \phi)(t_b - t_a)
+  \qquad
+  t_2 = t_a + \phi(t_b - t_a)
+  \qquad
+  \phi = \frac{\sqrt{5}-1}{2} \approx 0.618
+\]
+
+If $d(t_1) < d(t_2)$, set $t_b \leftarrow t_2$; else set $t_a \leftarrow t_1$.
+The interval shrinks by factor $\phi$ per iteration, giving convergence in
+$\mathcal{O}\!\left(\log \varepsilon / \log \phi\right)$ steps for tolerance $\varepsilon$.
+The minimum separation distance is then $d_{\min} = d(t^*)$.
+
+% ----------------------------------------------------------------
+\subsection{Collision Probability Estimation}
+% ----------------------------------------------------------------
+
+Following real-world Conjunction Data Message (CDM) standards, collision probability $P_c$ is
+computed in the \textbf{encounter plane} --- the plane perpendicular to the relative velocity
+vector $\vec{v}_{\text{rel}}$ at TCA.
+
+\subsubsection{Combined Covariance Projection}
+
+Let $\boldsymbol{\Sigma}_s,\, \boldsymbol{\Sigma}_d \in \mathbb{R}^{3\times3}$ be the positional
+covariance matrices of the satellite and debris object. The combined covariance is:
+
+\[
+  \boldsymbol{\Sigma}_c = \boldsymbol{\Sigma}_s + \boldsymbol{\Sigma}_d
+\]
+
+Projecting onto the $2\times2$ encounter plane (axes $\hat{e}_1,\, \hat{e}_2 \perp \hat{v}_{\text{rel}}$):
+
+\[
+  \mathbf{C} =
+  \begin{bmatrix} \hat{e}_1^\top \\ \hat{e}_2^\top \end{bmatrix}
+  \boldsymbol{\Sigma}_c
+  \begin{bmatrix} \hat{e}_1 & \hat{e}_2 \end{bmatrix}
+  \in \mathbb{R}^{2 \times 2}
+\]
+
+\subsubsection{Probability Integral}
+
+The collision probability is the integral of a bivariate Gaussian centred at the projected
+miss vector $\vec{m}$ over the combined hard-body disk of radius $r_{\text{hb}} = r_s + r_d$:
+
+\[
+  P_c =
+  \frac{1}{2\pi\sqrt{\det\mathbf{C}}}
+  \iint_{\xi_1^2 + \xi_2^2 \,\leq\, r_{\text{hb}}^2}
+  \exp\!\left(-\tfrac{1}{2}\,\vec{\xi}^{\,\top}\mathbf{C}^{-1}\vec{\xi}\right)
+  \,d\xi_1\,d\xi_2
+\]
+
+For the common case where the miss distance is much larger than $r_{\text{hb}}$, this reduces to
+the closed-form approximation:
+
+\[
+  P_c \approx \frac{r_{\text{hb}}^2}{2\,\sqrt{\det\mathbf{C}}}
+  \exp\!\left(-\tfrac{1}{2}\,\vec{m}^{\,\top}\mathbf{C}^{-1}\vec{m}\right)
+\]
+
+Typical values of $r_{\text{hb}}$ range from 10--20\,m for small debris to 10\,km for
+operator-defined safety keep-out zones.
+
+% ----------------------------------------------------------------
+\subsection{Composite Risk Scoring}
+% ----------------------------------------------------------------
+
+Each conjunction event is assigned a scalar risk score integrating physical and operational factors:
+
+\[
+  \mathcal{R} = w_1 \cdot \frac{1}{d_{\min}} + w_2 \cdot v_{\text{rel}} + w_3 \cdot P_c + w_4 \cdot \pi
+\]
+
+where $\pi \in [0,1]$ is a mission-priority weight, and the weights $\{w_i\}$ are normalized:
+
+\[
+  w_i > 0, \qquad \sum_{i=1}^{4} w_i = 1
+\]
+
+Alert levels are derived from thresholds on $d_{\min}$ and $\mathcal{R}$:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{2.2cm} p{3.2cm} p{2.8cm} p{3.5cm}}
+\toprule
+\textbf{Level} & \textbf{Distance Condition} & \textbf{Risk Condition} & \textbf{Action} \\
+\midrule
+\critical{CRITICAL} & $d_{\min} < 0.1\;\text{km}$ & $\mathcal{R} > 0.8$ & Immediate maneuver \\
+\textbf{WARNING}    & $d_{\min} < 5\;\text{km}$   & $\mathcal{R} > 0.4$ & Maneuver planning \\
+\safe{NOMINAL}      & $d_{\min} \geq 5\;\text{km}$& $\mathcal{R} \leq 0.4$ & Monitor \\
+\bottomrule
+\end{tabular}
+\caption{Alert Threshold Levels with Combined Conditions}
+\end{table}
+
+% ----------------------------------------------------------------
+\subsection{Maneuver Delta-V Calculations}
+% ----------------------------------------------------------------
+
+\subsubsection{Hohmann Transfer}
+
+A Hohmann transfer is a two-impulse maneuver between two coplanar circular orbits of radii
+$r_1$ (current) and $r_2$ (target). The two burns are:
+
+\[
+  \Delta V_1 = \sqrt{\frac{\mu}{r_1}}\left(\sqrt{\frac{2r_2}{r_1+r_2}} - 1\right)
+  \qquad
+  \Delta V_2 = \sqrt{\frac{\mu}{r_2}}\left(1 - \sqrt{\frac{2r_1}{r_1+r_2}}\right)
+\]
+
+Total cost and transfer time (half the period of the elliptical transfer orbit):
+
+\[
+  \Delta V_{\text{Hohmann}} = |\Delta V_1| + |\Delta V_2|
+  \qquad
+  t_{\text{transfer}} = \pi\sqrt{\frac{\left(\dfrac{r_1+r_2}{2}\right)^3}{\mu}}
+\]
+
+\subsubsection{Along-Track Burn (Clohessy--Wiltshire)}
+
+For small in-plane corrections, the required $\Delta V$ along the along-track direction
+$\hat{e}_T$ to achieve separation $\delta r$ at time $\Delta t$ before TCA is estimated
+using the linearized Clohessy--Wiltshire (CW) relative motion equations. For an along-track
+impulse $\Delta v_T$, the radial and along-track displacements evolve as:
+
+\[
+  \delta x(t) = \frac{2\Delta v_T}{n}\left(1 - \cos(n\Delta t)\right)
+  \qquad
+  \delta z(t) = \frac{\Delta v_T}{n}\sin(n\Delta t)
+\]
+
+where $n = \sqrt{\mu / a^3}$ is the mean motion and $a$ is the semi-major axis. The required
+impulse for a desired separation $\delta r_{\text{req}}$ is:
+
+\[
+  \Delta v_T = \frac{n\,\delta r_{\text{req}}}{\sqrt{4\left(1 - \cos(n\Delta t)\right)^2 + \sin^2(n\Delta t)}}
+\]
+
+\subsubsection{Plane Change Maneuver}
+
+An out-of-plane maneuver to change the orbital inclination by $\Delta i$ at the current
+circular orbital velocity $v_c = \sqrt{\mu / r}$ costs:
+
+\[
+  \Delta V_{\text{plane}} = 2\,v_c \sin\!\left(\frac{\Delta i}{2}\right)
+\]
+
+For small inclination changes ($\Delta i \ll 1$), this linearizes to
+$\Delta V_{\text{plane}} \approx v_c\,\Delta i$.
+
+% ----------------------------------------------------------------
+\subsection{Tsiolkovsky Rocket Equation and Burn Splitting}
+% ----------------------------------------------------------------
+
+\subsubsection{Fuel Mass Estimation}
+
+The propellant mass consumed for a maneuver $\Delta V$ by a spacecraft of initial wet mass $m_0$
+is given by the Tsiolkovsky rocket equation:
+
+\[
+  \Delta m = m_0 \left(1 - e^{-\Delta V \,/\, (I_{sp}\, g_0)}\right)
+\]
+
+where $I_{sp}$ is the thruster specific impulse (s) and $g_0 = 9.80665\;\text{m/s}^2$.
+The exhaust velocity is $v_e = I_{sp}\,g_0$. The post-burn mass is $m_f = m_0 - \Delta m$.
+
+\subsubsection{Burn Sequence Scheduling}
+
+When the required $\Delta V > \Delta V_{\max} = 15\;\text{m/s}$, the total maneuver is
+decomposed into $N_b$ burns separated by a cooldown interval $\tau_c = 600\;\text{s}$:
+
+\[
+  N_b = \left\lceil \frac{\Delta V}{\Delta V_{\max}} \right\rceil
+  \qquad
+  \Delta V_k = \frac{\Delta V}{N_b} \;\; \text{for } k = 1, \ldots, N_b
+\]
+
+Each sub-burn accounts for the reduced spacecraft mass after preceding burns:
+
+\[
+  \Delta m_k = m_{k-1} \left(1 - e^{-\Delta V_k \,/\, (I_{sp}\, g_0)}\right)
+  \qquad m_k = m_{k-1} - \Delta m_k
+\]
+
+Total propellant consumed across the sequence:
+
+\[
+  \Delta m_{\text{total}} = \sum_{k=1}^{N_b} \Delta m_k = m_0 \left(1 - e^{-\Delta V \,/\, (I_{sp}\, g_0)}\right)
+\]
+
+This confirms that splitting into $N_b$ burns preserves the same total fuel efficiency as a single
+equivalent burn, while protecting thruster hardware.
+
+% ----------------------------------------------------------------
+\subsection{Complete Maneuver Optimization Formulation}
+% ----------------------------------------------------------------
+
+The full constrained optimization solved by Layer 3 is:
+
+\[
+  \underset{\Delta V}{\text{minimize}}
+  \quad
+  \Delta m = m_0\!\left(1 - e^{-\Delta V\,/\,(I_{sp}\,g_0)}\right)
+\]
+
+\[
+  \text{subject to:}
+  \quad
+  \begin{cases}
+    d_{\min}(\Delta V) \geq d_{\text{safe}} = 5\;\text{km} & \text{(safe separation)} \\
+    \Delta V_k \leq 15\;\text{m/s} & \text{(per-burn hardware limit)} \\
+    t_{\text{burn}} \leq t^* - \Delta t_{\min} & \text{(execute before TCA)} \\
+    \Delta m \leq m_{\text{fuel,avail}} & \text{(fuel budget)} \\
+  \end{cases}
+\]
+
+Since $\Delta m$ is monotonically increasing in $\Delta V$, the fuel-optimal solution is the
+\textit{minimum} $\Delta V$ satisfying the safe-separation constraint. This is found by binary
+search over $\Delta V$ with a forward propagation evaluation of $d_{\min}(\Delta V)$ at each
+query. The decision engine evaluates all three candidate strategies under this formulation and
+returns the globally minimum-fuel solution.
+
+\begin{layerbox}[colframe=safegreen]{Section Summary}
+This section has presented the full mathematical stack: the two-body equations of motion,
+J2 perturbation model, RK4 integration with adaptive timestep, RTN frame transformation,
+KD-Tree complexity proof, TCA golden-section refinement, bivariate Gaussian collision
+probability, composite risk scoring, all three maneuver $\Delta V$ formulas, Tsiolkovsky
+burn-splitting, and the complete constrained optimization formulation.
+\end{layerbox}
+
+% ================================================================
+% CONCLUSION
+% ================================================================
+\section{Conclusion}
+
+This project presents a \keyword{scalable and modular system} for real-time space object monitoring,
+collision detection, and risk analysis. By integrating a high-performance data ingestion layer, an
+intelligent processing engine, and an interactive visualization interface, the system is capable of
+handling large volumes of dynamic orbital data efficiently.
+
+Throughout the design, emphasis was placed on balancing \textbf{computational efficiency} with
+\textbf{predictive accuracy}. Techniques such as spatial clustering, adaptive propagation, and
+risk-based prioritization enable the system to focus compute resources on critical scenarios while
+maintaining real-time responsiveness. The modular architecture ensures flexibility, allowing future
+integration of advanced components such as \textit{reinforcement learning-based maneuver planning}
+and \textit{AI-driven decision systems}.
+
+\begin{infobox}
+\textbf{Future Roadmap:} Reinforcement learning for maneuver policy optimization; federated
+conjunction analysis across operators; integration with live TLE data feeds (Space-Track.org);
+constellation-wide fuel budget optimization.
+\end{infobox}
+
+While the current implementation represents a strong foundation, the problem of space traffic
+management is inherently complex and continuously evolving. This work serves as a meaningful
+stepping stone toward more autonomous, intelligent, and globally coordinated systems for ensuring
+safe and sustainable operations in Earth's orbit.
+
+% ================================================================
+% REFERENCES
+% ================================================================
+\newpage
+\section*{References}
+\addcontentsline{toc}{section}{References}
+
+\begin{enumerate}[leftmargin=1.5cm, label={[\arabic*]}]
+  \item Vallado, D.~A., \textit{Fundamentals of Astrodynamics and Applications}. Microcosm Press.
+  \item Curtis, H.~D., \textit{Orbital Mechanics for Engineering Students}. Elsevier.
+  \item NASA Orbital Debris Program Office, \textit{Orbital Debris Quarterly News}.\\ \url{https://www.orbitaldebris.jsc.nasa.gov/}
+  \item ESA Space Debris Office, \textit{Space Debris Mitigation Guidelines}.\\ \url{https://www.esa.int/Safety_Security/Space_Debris}
+  \item MongoDB, \textit{MongoDB Documentation}. \url{https://www.mongodb.com/docs/}
+  \item Go Team, \textit{The Go Programming Language Documentation}. \url{https://go.dev/doc/}
+  \item Pedregosa et al., \textit{Scikit-learn: Machine Learning in Python}. JMLR, 2011.\\ \url{https://scikit-learn.org/}
+  \item Poliastro Contributors, \textit{Poliastro Library Documentation}.\\ \url{https://docs.poliastro.space/}
+  \item Kelso, T.S., ``Analysis of the 2007 Chinese ASAT Test and the Impact of its Debris on the Space Environment,'' \textit{Advanced Maui Optical and Space Surveillance Technologies Conference}.
+  \item Kessler, D.~J., and Cour-Palais, B.~G., ``Collision Frequency of Artificial Satellites: The Creation of a Debris Belt,'' \textit{Journal of Geophysical Research}, 1978.
+\end{enumerate}
 
 \end{document}
