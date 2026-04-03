@@ -624,7 +624,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
-      group.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
+      group.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: sat.orbitPhase };
       s.scene.add(group);
       s.satGroups.set(sat.id, group);
 
