@@ -745,11 +745,9 @@ def plane_change_combined(state, V_f, theta):
             f"Combined maneuver ΔV of {dV:.6f} km/s exceeds 0.015 km/s limit"
         )
 
-    # NOTE:
-    # This is a combined plane + speed change.
-    # The burn direction is not purely R, T, or N.
-    # Proper direction requires vector geometry between velocity vectors.
-    # This will be implemented in a future upgrade.
+    # Calculate vector direction in RTN and ECI frames
+    dV_rtn = np.array([0.0, V_f * math.cos(theta) - V_i, V_f * math.sin(theta)])
+    dV_eci = rtn_to_eci(dV_rtn, state)
 
     return {
         "method":    "plane_change_combined",
@@ -758,8 +756,8 @@ def plane_change_combined(state, V_f, theta):
         "theta":     float(theta),
         "theta_deg": math.degrees(theta),
         "dV":        float(dV),
-        "dV_rtn":    None,
-        "dV_eci":    None,
+        "dV_rtn":    dV_rtn,
+        "dV_eci":    dV_eci,
     }
 
 

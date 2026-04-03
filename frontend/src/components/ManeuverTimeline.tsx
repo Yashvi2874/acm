@@ -11,11 +11,11 @@ interface TimelineBlock {
 }
 
 interface Props {
-  maneuvers: Maneuver[];
-  history: ManeuverHistoryLog[];
-  satellites: Satellite[];
+  maneuvers?: Maneuver[];
+  history?: ManeuverHistoryLog[];
+  satellites?: Satellite[];
   simTime: string;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 const HOURS = 24;
@@ -45,7 +45,13 @@ function clampHour(value: number) {
   return Math.max(0, Math.min(HOURS, value));
 }
 
-export default function ManeuverTimeline({ maneuvers, history, satellites, simTime, onClose }: Props) {
+export default function ManeuverTimeline({
+  maneuvers = [],
+  history = [],
+  satellites = [],
+  simTime,
+  onClose = () => {},
+}: Props) {
   const timelineBlocks = useMemo(() => {
     const blocks: TimelineBlock[] = [];
 

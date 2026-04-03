@@ -92,6 +92,13 @@ app.include_router(maneuver.router,       prefix="/api/maneuver",       tags=["m
 app.include_router(simulate.router,       prefix="/api/simulate",       tags=["simulate"])
 app.include_router(visualization.router,  prefix="/api/visualization",  tags=["visualization"])
 
+import os
+from fastapi.staticfiles import StaticFiles
+
+frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
+
 
 @app.get("/health", tags=["health"])
 async def health():

@@ -255,13 +255,22 @@ export default function App() {
             },
           ],
         }),
-      }).catch(() => { /* fire-and-forget */ });
-    }
-
-    // Trigger flare if immediate
-    if (plan.scheduledHour === 0) {
-      setFlaringId(plan.satelliteId);
-      setTimeout(() => setFlaringId(null), 3000);
+      })
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json();
+          alert(`Maneuver Failed: ${err.detail || 'System constraint violated'}`);
+        } else {
+          // Trigger flare if successful and immediate
+          if (plan.scheduledHour === 0) {
+            setFlaringId(plan.satelliteId);
+            setTimeout(() => setFlaringId(null), 3000);
+          }
+        }
+      })
+      .catch((e) => {
+        alert("Network error: Could not schedule maneuver.");
+      });
     }
 
     setManeuverModal(false);
@@ -364,7 +373,7 @@ export default function App() {
         }
       `}</style>
 
-      <TopBar satellites={satellites} />
+      <TopBar satellites={satellites} debris={debris} />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Left panel - responsive with proper scrolling */}

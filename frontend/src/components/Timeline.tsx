@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Maneuver } from '../types';
 
-interface Props { maneuvers: Maneuver[]; }
+interface Props { maneuvers?: Maneuver[]; }
 
 const TYPE_COLOR: Record<string, string> = {
   avoidance: '#ff3b3b',
@@ -14,7 +14,7 @@ const TYPE_BG: Record<string, string> = {
   recovery: 'rgba(0,255,136,0.2)',
 };
 
-export default function Timeline({ maneuvers }: Props) {
+export default function Timeline({ maneuvers = [] }: Props) {
   const [cursor, setCursor] = useState(0);
   const [tooltip, setTooltip] = useState<{ mnv: Maneuver; x: number; y: number } | null>(null);
 

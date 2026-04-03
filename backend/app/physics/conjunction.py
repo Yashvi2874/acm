@@ -1,17 +1,15 @@
 """
 Conjunction detection — O(N log N) via scipy KDTree with 100m collision threshold.
 
-Hackathon Specification:
+ACM Specification:
   Collision when |r_sat(t) - r_deb(t)| < 0.100 km (100 meters)
 
 Algorithm
 ---------
-1. Build KDTree from debris positions (O(N log N) nearest-neighbor search)
+1. Build KDTree from debris positions
 2. Query satellite positions against tree with radius = threshold_km
-3. For each candidate pair, refine TCA with scipy.optimize.minimize_scalar (bounded)
-4. Flag miss_distance < 0.100 km as CRITICAL collision risk
-
-Units: km / km/s throughout.
+3. Refine TCA with scipy.optimize.minimize_scalar
+4. Flag miss_distance < 0.100 km as CRITICAL
 """
 from __future__ import annotations
 
@@ -23,7 +21,7 @@ from typing import Any
 
 from physics.propagator import propagate_rk4, propagate_ivp
 
-# ── Hackathon Spec-Exact Thresholds ───────────────────────────────────────────
+# ── ACM Spec-Exact Thresholds ───────────────────────────────────────────
 COLLISION_THRESHOLD_KM = 0.100  # 100 meters - per project specification
 COARSE_KM              = 5.0    # Initial screening radius for KDTree query
 CRITICAL_KM            = COLLISION_THRESHOLD_KM  # Alias for clarity
@@ -241,7 +239,7 @@ def check_collision(sat_state: list[float], deb_state: list[float]) -> bool:
     """
     Check if satellite and debris are currently colliding.
     
-    Hackathon Spec: Collision when |r_sat - r_deb| < 0.100 km (100 meters)
+    ACM Spec: Collision when |r_sat - r_deb| < 0.100 km (100 meters)
     
     Args:
         sat_state: [x, y, z, vx, vy, vz] in km and km/s

@@ -17,7 +17,7 @@ interface HealthPayload {
   mongodb_debris?: number;
 }
 
-export default function TopBar({ satellites, debris, showDashboard = false, onToggleDashboard }: Props) {
+export default function TopBar({ satellites = [], debris = [], showDashboard = false, onToggleDashboard }: Props) {
   const [time, setTime] = useState(new Date());
   const [health, setHealth] = useState<HealthPayload | null>(null);
 

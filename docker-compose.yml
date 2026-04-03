@@ -21,7 +21,7 @@ services:
       mongodb:
         condition: service_healthy
     environment:
-      - MONGO_URI=mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM&tls=true&tlsInsecure=true
+      - MONGO_URI=mongodb://mongodb:27017
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s

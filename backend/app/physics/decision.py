@@ -348,19 +348,20 @@ def schedule_graveyard(
     """
     Plan and schedule a graveyard orbit raise for an EOL satellite.
 
-    Raises the orbit by GRAVEYARD_RAISE_KM above current altitude using
-    Hohmann transfer. Burns are split and scheduled with cooldown spacing.
-
     Args:
         sat_id       : satellite identifier
         sat          : SatelliteState instance
         current_time : current simulation UTC time
         sim_state    : SimulationState singleton
         fleet        : per-satellite mass fleet dict
-
-    Returns:
-        list of scheduled burn_ids (empty if insufficient fuel)
     """
+    mode = "active_graveyard"
+    if sat.fuel_kg < FUEL_EOL_THRESHOLD / 2:
+        mode = "passive_drift"
+        sat.status = "decommissioned"
+        logger.info("EOL: %s set to passive_drift", sat_id)
+        return []
+
     state   = np.array(sat.position + sat.velocity)
     r_cur   = float(np.linalg.norm(state[:3]))
     r_grave = r_cur + GRAVEYARD_RAISE_KM
@@ -383,12 +384,56 @@ def schedule_graveyard(
     burn_ids = schedule_burns(sat_id, burns, current_time, sim_state)
     sync_fuel(sat_id, burns, sim_state, fleet)
     sat.status = "decommissioned"
-    logger.info("EOL: %s scheduled graveyard raise to %.1f km", sat_id, r_grave - 6378.137)
+    logger.info("EOL: %s scheduled graveyard raise to %.1f km (mode %s)", sat_id, r_grave - 6378.137, mode)
     return burn_ids
 
 
-# ── Step 8 — Main decision loop ───────────────────────────────────────────────
+def predict_drift(state: np.ndarray, slot_state: np.ndarray, dt: float) -> float:
+    from physics.propagator import propagate_rk4
+    future_state = propagate_rk4(state.tolist(), dt, min(dt, 30.0))[-1]
+    predicted_error = np.linalg.norm(np.array(future_state[:3]) - np.array(slot_state[:3]))
+    return float(predicted_error)
 
+def optimize_cost(options: list[dict]) -> dict:
+    w1, w2, w3 = 1.0, 0.01, 1000.0
+    for opt in options:
+        fuel = opt.get("fuel_kg", 0.0)
+        time = opt.get("plan", {}).get("TOF", 0.0)
+        d_min = opt.get("plan", {}).get("risk_d_min", 1.0)
+        epsilon = 0.001
+        risk = 1 / (d_min + epsilon)
+        opt["J"] = w1 * fuel + w2 * time + w3 * risk
+    
+    if not options: return {}
+    return min(options, key=lambda x: x["J"])
+
+def optimize_schedule(burns: list, constraints: dict) -> list:
+    schedule = []
+    base_time = constraints.get("base_time")
+    cooldown = 600
+    for i, burn in enumerate(burns):
+        assign_time = base_time + timedelta(seconds=i * cooldown)
+        schedule.append({"delta_v_rtn": burn.tolist(), "time": assign_time})
+    return schedule
+
+def assess_fuel_efficiency(delta_v: float, fuel_used: float) -> dict:
+    efficiency = delta_v / fuel_used if fuel_used > 0 else 0.0
+    return {
+        "fuel_used": fuel_used,
+        "efficiency": efficiency,
+        "ΔV_total": delta_v
+    }
+
+def plan_blind_evasion(sat_state: np.ndarray, threat: dict, current_time: datetime, next_los_time: datetime) -> dict:
+    t_tca_dt = current_time + timedelta(seconds=threat["t_tca"])
+    if t_tca_dt < next_los_time:
+        maneuver_time = current_time
+    else:
+        maneuver_time = next_los_time
+    plan = plan_evasion_burn(sat_state, threat)
+    return plan, maneuver_time
+
+# ── Step 8 — Main decision loop ───────────────────────────────────────────────
 def decision_step(
     sim_state: SimulationState,
     current_time: datetime,
@@ -459,10 +504,10 @@ def decision_step(
                 continue   # evasion takes priority — skip recovery/EOL this tick
 
         # ── Priority 2: station-keeping recovery ──────────────────────────────
-        if check_recovery_needed(sat.drift_km):
-            slot_state = np.array(
-                sat.nominal_slot["position"] + sat.nominal_slot["velocity"]
-            )
+        slot_state = np.array(sat.nominal_slot["position"] + sat.nominal_slot["velocity"])
+        predicted_error = predict_drift(state, slot_state, 3600.0)
+        
+        if check_recovery_needed(sat.drift_km) or predicted_error > STATION_KEEP_KM:
             mass_state = fleet.get(sat_id, {}).get("mass") or initialize_mass()
 
             result = recovery_controller(
@@ -474,7 +519,19 @@ def decision_step(
 
             if result["action"] == "recover":
                 burns = result["result"]["burns"]
-                ids   = schedule_burns(sat_id, burns, current_time, sim_state)
+                
+                # Advanced scheduling
+                schedule = optimize_schedule(burns, {"base_time": current_time})
+                ids = []
+                for b_item in schedule:
+                    sim_burn = ScheduledBurn(
+                        satellite_id=sat_id,
+                        delta_v_rtn=b_item["delta_v_rtn"],
+                        burn_time=b_item["time"],
+                    )
+                    sim_state.enqueue_burn(sim_burn)
+                    ids.append(sim_burn.burn_id)
+                
                 # Fuel already deducted inside recovery_controller → sync back
                 sat.fuel_kg = mass_state["m_fuel"]
                 sat.mass_kg = mass_state["m_total"]

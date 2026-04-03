@@ -195,10 +195,10 @@ const styles = {
 // ============================================================================
 
 export default function OrbitalInsightDashboard({
-  satellites,
-  debris,
-  groundStations,
-  cdmWarnings,
+  satellites = [],
+  debris = [],
+  groundStations = [],
+  cdmWarnings = [],
   simTime,
   tick,
   onManeuver,
@@ -407,8 +407,8 @@ export default function OrbitalInsightDashboard({
       {showManeuverModal && selectedSatellite && (
         <ManeuverModal
           satellite={selectedSatellite}
-          onClose={() => setShowManeuverModal(false)}
-          onExecute={(plan) => {
+          onCancel={() => setShowManeuverModal(false)}
+          onConfirm={(plan) => {
             setManeuverPlan(plan);
             setFlaringId(selectedSatellite.id);
             setTimeout(() => setFlaringId(null), 2000);

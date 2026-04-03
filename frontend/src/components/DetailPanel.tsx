@@ -5,9 +5,9 @@ interface Props {
   satellite: Satellite | null;
   groundStation?: { id: string; name: string; lat: number; lon: number; altitudeKm?: number; min_angle_deg?: number; } | null;
   satellitesInCone?: Satellite[];
-  maneuvers: Maneuver[];
-  onPlanManeuver: () => void;
-  onClose: () => void;
+  maneuvers?: Maneuver[];
+  onPlanManeuver?: () => void;
+  onClose?: () => void;
 }
 
 const STATUS_COLOR = { nominal: 'var(--green)', warning: 'var(--amber)', critical: 'var(--red)' };
@@ -16,7 +16,14 @@ const TYPE_COLOR: Record<string, string> = {
   avoidance: '#ff3b3b', 'station-keeping': '#00d4ff', recovery: '#00ff88',
 };
 
-export default function DetailPanel({ satellite, groundStation, satellitesInCone, maneuvers, onPlanManeuver, onClose }: Props) {
+export default function DetailPanel({
+  satellite,
+  groundStation,
+  satellitesInCone,
+  maneuvers = [],
+  onPlanManeuver = () => {},
+  onClose = () => {},
+}: Props) {
   if (!satellite && !groundStation) {
     return (
       <div style={{

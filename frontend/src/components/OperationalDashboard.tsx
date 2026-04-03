@@ -11,7 +11,7 @@ interface Props {
 const MU = 398600.4418;
 const RE = 6378.137;
 
-export default function OperationalDashboard({ satellites, debris, cdmWarnings, simTime }: Props) {
+export default function OperationalDashboard({ satellites = [], debris = [], cdmWarnings = [], simTime }: Props) {
   // Calculate orbital elements for each satellite
   const satElements = useMemo(() => {
     return satellites.map(sat => {

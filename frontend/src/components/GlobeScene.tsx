@@ -139,7 +139,7 @@ function createExhaustSystem(scene: THREE.Scene) {
   return { points, geo, particles };
 }
 
-export default function GlobeScene({ satellites, debris, groundStations, simTime, selectedId, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
+export default function GlobeScene({ satellites = [], debris = [], groundStations = [], simTime, selectedId, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   // Ref so the animation loop always reads the latest hoveredId without re-mounting
   const hoveredIdRef = useRef<string | null>(null);
@@ -515,11 +515,18 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         if (Math.abs(radius - sc.targetRadius) < 0.1) sc.isAutoZooming = false;
       }
 
-      camera.position.set(
-        focusTargetObj.x + radius * Math.sin(phi) * Math.sin(theta),
-        focusTargetObj.y + radius * Math.cos(phi),
-        focusTargetObj.z + radius * Math.sin(phi) * Math.cos(theta)
-      );
+      let cx = focusTargetObj.x + radius * Math.sin(phi) * Math.sin(theta);
+      let cy = focusTargetObj.y + radius * Math.cos(phi);
+      let cz = focusTargetObj.z + radius * Math.sin(phi) * Math.cos(theta);
+
+      const MIN_CAM_DIST = 14.0;
+      const camDist = Math.sqrt(cx*cx + cy*cy + cz*cz);
+      if (camDist < MIN_CAM_DIST) {
+         const scale = MIN_CAM_DIST / camDist;
+         cx *= scale; cy *= scale; cz *= scale;
+      }
+
+      camera.position.set(cx, cy, cz);
       camera.lookAt(focusTargetObj);
       // Slowly rotate clouds relative to earth
       if (clouds) clouds.rotation.y += 0.00008;
@@ -765,7 +772,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     if (!s) return;
     s.hoveredId = hoveredId;
     if (selectedId) {
-       s.targetRadius = 3.5;
+       s.targetRadius = 6.0;
        s.isAutoZooming = true;
     } else {
        s.targetRadius = 28;

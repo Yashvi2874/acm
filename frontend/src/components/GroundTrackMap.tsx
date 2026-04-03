@@ -152,9 +152,9 @@ function calculateLOSCone(
 // ============================================================================
 
 export default function GroundTrackMap({
-  satellites,
-  debris,
-  groundStations,
+  satellites = [],
+  debris = [],
+  groundStations = [],
   simTime,
   selectedId,
   onSelect,

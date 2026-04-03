@@ -108,3 +108,32 @@ def visible_stations_eci(
     gmst = _gmst(sim_time)
     sat_ecef = _eci_to_ecef_km(np.array(sat_pos_eci_km), gmst)
     return visible_stations(sat_ecef.tolist(), stations)
+
+def check_line_of_sight(sat_state: list[float], ground_station: dict) -> dict:
+    import math
+    r_sat = np.array(sat_state[:3])
+    r_station = np.array(ground_station.get("r_ecef", [0.0, 0.0, 0.0]))
+    
+    # If not provided, fallback to convert from lat/lon/alt
+    if np.linalg.norm(r_station) == 0:
+         r_station = _lla_to_ecef_km(ground_station.get("lat", 0), ground_station.get("lon", 0), ground_station.get("alt", 0))
+
+    r_rel = r_sat - r_station
+    if np.linalg.norm(r_station) == 0 or np.linalg.norm(r_rel) == 0:
+        return {"visible": False, "elevation": -90.0}
+        
+    r_station_unit = r_station / np.linalg.norm(r_station)
+    
+    dp = float(np.dot(r_rel, r_station))
+    
+    # Calculate elevation mathematically
+    sin_el = np.dot(r_rel, r_station_unit) / np.linalg.norm(r_rel)
+    sin_el = max(-1.0, min(1.0, sin_el))
+    elevation = math.asin(sin_el)
+    
+    visible = dp > 0 and math.degrees(elevation) > ground_station.get("min_elevation", 5.0)
+    
+    return {
+        "visible": visible,
+        "elevation": float(math.degrees(elevation))
+    }
