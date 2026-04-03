@@ -29,9 +29,12 @@ export interface Satellite {
   autoManeuvering?: boolean;   // currently executing auto-avoidance
   threatDebrisIdx?: number;    // index of threatening debris piece
   conjunctions?: ConjunctionInfo[]; // nearby objects for proximity display
+  maneuverTrajectory?: [number, number, number][]; // ECI waypoints for pending burn preview
+  hasPendingBurns?: boolean;   // true when decision layer has queued burns
 }
 
 export interface DebrisPoint {
+  id?: string;
   x: number; y: number; z: number;
   vx: number; vy: number; vz: number;
   r: number; // orbit radius

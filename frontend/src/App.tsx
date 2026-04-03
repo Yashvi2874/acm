@@ -35,9 +35,7 @@ export default function App() {
   const [useMock] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const hoveredIdRef = useRef<string | null>(null);
-  const refreshIntervalRef = useRef<number | null>(null);
-
-  // Physics backend integration — seeds state and polls step+snapshot
+  // Physics backend integration — seeds state and polls step+snapshot (includes maneuver trajectories)
   usePhysicsSimulation({
     initialSatellites: [],
     initialDebris: [],
@@ -52,85 +50,6 @@ export default function App() {
       console.warn("Backend unavailable. Waiting for connection...");
     },
   });
-
-  // Auto-refresh data from database every 60 seconds
-  useEffect(() => {
-    const refreshData = async () => {
-      try {
-        const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/telemetry/objects`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.satellites && data.debris) {
-            console.log(`Auto-refreshing data: ${data.satellites.length} satellites, ${data.debris.length} debris`);
-            
-            // Transform backend format to frontend Satellite interface
-            const MU = 398600.4418;
-            const transformedSats = data.satellites.map((sat: any) => {
-              const pos = sat.r ? [sat.r.x, sat.r.y, sat.r.z] as [number, number, number] : [0, 0, 0];
-              const vel = sat.v ? [sat.v.x, sat.v.y, sat.v.z] as [number, number, number] : [0, 0, 0];
-              const r = Math.sqrt(pos[0]**2 + pos[1]**2 + pos[2]**2);
-              // Inclination from angular momentum vector h = r × v
-              const hx = pos[1]*vel[2] - pos[2]*vel[1];
-              const hy = pos[2]*vel[0] - pos[0]*vel[2];
-              const hz = pos[0]*vel[1] - pos[1]*vel[0];
-              const h = Math.sqrt(hx*hx + hy*hy + hz*hz);
-              const inc = h > 0 ? Math.acos(Math.max(-1, Math.min(1, hz / h))) : 0;
-              const phase = Math.atan2(pos[1], pos[0]);
-              // Angular speed from circular orbit approximation
-              const speed = Math.sqrt(MU / (r * r * r)) * 0.016 * 40;
-              return {
-                id: sat.id || `SAT-${Math.random().toString(36).substr(2, 9)}`,
-                name: sat.name || sat.id || 'Unknown',
-                status: (['nominal','warning','critical'].includes(sat.status) ? sat.status : 'nominal') as 'nominal'|'warning'|'critical',
-                fuel: sat.fuel_kg !== undefined ? Math.round(sat.fuel_kg * 200) : 100,
-                pos, vel,
-                orbitRadius: r,
-                orbitInclination: inc,
-                orbitPhase: phase,
-                orbitSpeed: speed,
-                collisionRisk: false,
-                autoManeuvering: false,
-              };
-            });
-            
-            // Transform debris format
-            const transformedDebris = data.debris.map((deb: any) => {
-              const pos = deb.r ? [deb.r.x, deb.r.y, deb.r.z] as [number, number, number] : [0, 0, 0];
-              const vel = deb.v ? [deb.v.x, deb.v.y, deb.v.z] as [number, number, number] : [0, 0, 0];
-              
-              return {
-                id: deb.id || `DEB-${Math.random().toString(36).substr(2, 9)}`,
-                x: pos[0],
-                y: pos[1],
-                z: pos[2],
-                vx: vel[0],
-                vy: vel[1],
-                vz: vel[2],
-              };
-            });
-            
-            setSatellites(transformedSats);
-            setDebris(transformedDebris);
-            setSimTime(new Date().toISOString());
-            setTick(t => t + 1);
-          }
-        }
-      } catch (error) {
-        console.warn('Auto-refresh failed:', error);
-      }
-    };
-
-    // Initial refresh after 5 seconds
-    const initialTimeout = setTimeout(refreshData, 5000);
-    
-    // Then refresh every 60 seconds
-    refreshIntervalRef.current = setInterval(refreshData, 60000);
-
-    return () => {
-      if (initialTimeout) clearTimeout(initialTimeout);
-      if (refreshIntervalRef.current) clearInterval(refreshIntervalRef.current);
-    };
-  }, []);
 
   const selectedSat = selectedType === 'satellite' ? satellites.find(s => s.id === selectedId) ?? null : null;
   const selectedStation = selectedType === 'station' ? GROUND_STATIONS.find(gs => gs.id === selectedId) ?? null : null;
@@ -228,21 +147,30 @@ export default function App() {
     };
     setManeuvers(prev => [...prev, newMnv]);
 
-    // Send to backend if connected
     if (!useMock) {
-      // Convert deltaV + direction to RTN vector (prograde = +T, retrograde = -T, radial = +R)
       const dv = plan.deltaV;
-      const dvRtn =
-        plan.direction === 'prograde'   ? [0, dv, 0] :
-        plan.direction === 'retrograde' ? [0, -dv, 0] :
-                                          [dv, 0, 0];
+      const deltaV_vector =
+        plan.direction === 'prograde'
+          ? { x: 0, y: dv, z: 0 }
+          : plan.direction === 'retrograde'
+            ? { x: 0, y: -dv, z: 0 }
+            : { x: dv, y: 0, z: 0 };
+      const baseMs = new Date(simTime).getTime();
+      const burnTimeIso = new Date(
+        plan.scheduledHour === 0 ? baseMs - 2000 : baseMs + plan.scheduledHour * 3600 * 1000,
+      ).toISOString();
       fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/maneuver/schedule`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          satellite_id: plan.satelliteId,
-          delta_v_rtn: dvRtn,
-          burn_time: plan.scheduledHour === 0 ? null : undefined,
+          satelliteId: plan.satelliteId,
+          maneuver_sequence: [
+            {
+              burn_id: mnvId,
+              burnTime: burnTimeIso,
+              deltaV_vector,
+            },
+          ],
         }),
       }).catch(() => { /* fire-and-forget */ });
     }
@@ -255,7 +183,7 @@ export default function App() {
 
     setManeuverModal(false);
     setManeuverPlan(null);
-  }, [useMock]);
+  }, [useMock, simTime]);
 
   const handleOpenModal = useCallback(() => {
     if (!selectedId || selectedType !== 'satellite') return;

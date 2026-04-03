@@ -5,6 +5,7 @@ Validates delta-v (km/s RTN), checks fuel budget, inserts a ScheduledBurn
 into the maneuver_queue sorted by burn_time (UTC datetime).
 """
 import math
+import os
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
@@ -16,6 +17,8 @@ from physics.ground_station import visible_stations
 router = APIRouter()
 
 MAX_DV_KMS = 0.5    # km/s — 500 m/s sanity cap
+# Set ACM_ENFORCE_LOS=true to require ground visibility before scheduling (human-in-the-loop).
+_ENFORCE_LOS = os.getenv("ACM_ENFORCE_LOS", "").lower() in ("1", "true", "yes")
 
 
 class DeltaVVector(BaseModel):
@@ -37,13 +40,11 @@ async def schedule_maneuver(req: ManeuverRequest):
     async with simulation_state.lock:
         sat = simulation_state.get_or_create_satellite(req.satelliteId)
         
-        # LOS Validation
         visible = visible_stations(sat.position)
         has_los = len(visible) > 0
-        
         projected_mass = sat.mass_kg
 
-        if not has_los:
+        if _ENFORCE_LOS and not has_los:
             return {
                 "status": "REJECTED_LOS",
                 "validation": {

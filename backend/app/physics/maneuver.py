@@ -13,6 +13,12 @@ from numpy.linalg import norm
 
 from .constants import MU
 
+# ── Propulsion constants ──────────────────────────────────────────────────────
+G0             = 9.80665    # m/s²    — standard gravity (exact SI definition)
+ISP            = 300.0      # seconds — specific impulse (representative CubeSat thruster)
+M_DRY          = 500.0      # kg      — dry mass
+M_FUEL_INITIAL = 50.0       # kg      — initial propellant mass
+
 
 # ── Custom exceptions ─────────────────────────────────────────────────────────
 
@@ -476,6 +482,18 @@ if __name__ == "__main__":
                        atol=1e-6), "equatorial sanity failed"
     print("compute_target_velocity_circular sanity test passed ✓")
 
+    # ── Fuel model sanity test ────────────────────────────────────────────────
+    print("\n── Fuel model sanity test ──")
+    mass = initialize_mass()
+    dV_test = np.array([0.0, 0.01, 0.0])   # 10 m/s in km/s
+
+    fuel_result = apply_burn_with_fuel(mass, dV_test)
+    print(f"Fuel used (kg):   {fuel_result['fuel_used']:.6f}")
+    print(f"Remaining fuel:   {fuel_result['remaining_fuel']:.6f}")
+    assert fuel_result["fuel_used"] > 0
+    assert fuel_result["remaining_fuel"] < M_FUEL_INITIAL
+    print("Fuel model sanity test passed ✓")
+
 
 # ── Plane change functions (Prompts 1–4) ──────────────────────────────────────
 # All four functions use math (stdlib) for scalar trig — no numpy.
@@ -903,4 +921,577 @@ def compute_target_velocity_circular(
         "v_target":    v_target,
         "v_mag":       float(v_mag),
         "h_hat":       h_hat,
+    }
+
+
+# ── Fuel consumption and mass tracking ───────────────────────────────────────
+#
+# Fuel consumption depends on current mass.
+# As fuel decreases, spacecraft becomes lighter.
+# Same ΔV costs LESS fuel later in mission.
+#
+# This model assumes impulsive burns.
+# Thermal cooldown (600 s) handled separately.
+# ΔV limit (15 m/s) enforced before this layer.
+
+
+def initialize_mass() -> dict:
+    """
+    Create the initial mass state dictionary for a satellite.
+
+    Returns:
+        {
+            "m_dry":   float,  # dry mass, kg
+            "m_fuel":  float,  # current propellant mass, kg
+            "m_total": float,  # total wet mass, kg
+        }
+    """
+    return {
+        "m_dry":   M_DRY,
+        "m_fuel":  M_FUEL_INITIAL,
+        "m_total": M_DRY + M_FUEL_INITIAL,
+    }
+
+
+def compute_fuel_used(dV: float, m_current: float) -> float:
+    """
+    Compute propellant mass consumed for a single impulsive burn.
+
+    Uses Tsiolkovsky rocket equation.
+    ΔV must be in m/s for correct computation.
+
+    Args:
+        dV        : burn magnitude in km/s
+        m_current : current total wet mass, kg
+
+    Returns:
+        fuel_used : propellant consumed, kg
+    """
+    # Uses Tsiolkovsky rocket equation
+    # ΔV must be in m/s for correct computation
+    dV_mps    = abs(dV) * 1000.0                          # km/s → m/s
+    fuel_used = m_current * (1 - np.exp(-dV_mps / (ISP * G0)))
+    return float(fuel_used)
+
+
+def apply_burn_with_fuel(mass_state: dict, dV_vector: np.ndarray) -> dict:
+    """
+    Apply a single burn, deducting propellant from mass_state in-place.
+
+    Args:
+        mass_state : dict from initialize_mass() — mutated in-place
+        dV_vector  : (3,) array — burn vector in ECI, km/s
+
+    Returns:
+        {
+            "fuel_used":      float,  # propellant consumed this burn, kg
+            "remaining_fuel": float,  # propellant remaining after burn, kg
+            "new_mass":       float,  # total wet mass after burn, kg
+        }
+
+    Raises:
+        ValueError: if required fuel exceeds available propellant
+    """
+    # Step 3A — burn magnitude
+    dV = np.linalg.norm(dV_vector)
+
+    # Step 3B — fuel required via Tsiolkovsky
+    fuel_used = compute_fuel_used(dV, mass_state["m_total"])
+
+    # Step 3C — check availability
+    if fuel_used > mass_state["m_fuel"]:
+        raise ValueError(
+            f"Insufficient fuel for burn: need {fuel_used:.4f} kg, "
+            f"have {mass_state['m_fuel']:.4f} kg"
+        )
+
+    # Step 3D — update mass state in-place
+    mass_state["m_fuel"]  -= fuel_used
+    mass_state["m_total"]  = mass_state["m_dry"] + mass_state["m_fuel"]
+
+    # Safeguard: floating-point drift must never produce negative fuel
+    if mass_state["m_fuel"] < 0:
+        raise ValueError("Fuel cannot be negative")
+
+    # Step 3E — return
+    return {
+        "fuel_used":      float(fuel_used),
+        "remaining_fuel": float(mass_state["m_fuel"]),
+        "new_mass":       float(mass_state["m_total"]),
+    }
+
+
+def apply_sequence_with_fuel(mass_state: dict, burns: list) -> dict:
+    """
+    Apply fuel consumption across a complete multi-burn sequence.
+
+    Args:
+        mass_state : dict from initialize_mass() — mutated in-place
+        burns      : list of (3,) ECI ΔV arrays (from generate_maneuver_sequence)
+
+    Returns:
+        {
+            "burn_results":   list of per-burn result dicts,
+            "final_mass":     float,  # total wet mass after all burns, kg
+            "remaining_fuel": float,  # propellant remaining after all burns, kg
+        }
+    """
+    results = []
+    for burn in burns:
+        result = apply_burn_with_fuel(mass_state, burn)
+        results.append(result)
+
+    return {
+        "burn_results":   results,
+        "final_mass":     float(mass_state["m_total"]),
+        "remaining_fuel": float(mass_state["m_fuel"]),
+    }
+
+
+# ── Recovery system (Prompts 1–6) ─────────────────────────────────────────────
+
+STATION_KEEPING_BOX_KM = 10.0       # spherical tolerance radius, km
+_PLANE_THRESHOLD_RAD   = math.radians(0.1)   # < 0.1° → plane change negligible
+_RADIUS_THRESHOLD_KM   = 1.0                 # < 1 km Δr → same orbital shell
+
+
+def compute_nominal_slot_position(
+    r0_vec: np.ndarray,
+    v0_vec: np.ndarray,
+    dt: float,
+    mu: float,
+) -> np.ndarray:
+    """
+    Compute the expected ECI position of the nominal orbital slot at t0 + dt.
+
+    This represents the "Nominal Orbital Slot" — a moving reference point
+    along the ideal two-body orbit. No perturbations are applied.
+
+    Args:
+        r0_vec : (3,) ECI position at reference epoch, km
+        v0_vec : (3,) ECI velocity at reference epoch, km/s
+        dt     : time elapsed since reference epoch, seconds
+        mu     : gravitational parameter, km³/s²
+
+    Returns:
+        (3,) ECI position of nominal slot at t0 + dt, km
+    """
+    r0_mag = float(norm(r0_vec))
+    n      = math.sqrt(mu / r0_mag**3)          # mean motion, rad/s
+
+    # Orbital frame from reference state
+    h_vec  = np.cross(r0_vec, v0_vec)
+    h_hat  = h_vec / norm(h_vec)
+    e_r    = r0_vec / r0_mag                    # radial unit vector at t0
+    e_t    = np.cross(h_hat, e_r)               # transverse unit vector at t0
+
+    # Propagate phase by n*dt (circular orbit: true anomaly = mean anomaly)
+    c = math.cos(n * dt)
+    s = math.sin(n * dt)
+    return r0_mag * (c * e_r + s * e_t)
+
+
+def compute_slot_error(
+    current_position: np.ndarray,
+    slot_position: np.ndarray,
+) -> dict:
+    """
+    Compute the deviation between the satellite's current position and its
+    nominal orbital slot position.
+
+    This enforces the "Station-Keeping Box" — a 10 km spherical boundary.
+
+    Args:
+        current_position : (3,) ECI position of satellite, km
+        slot_position    : (3,) ECI position of nominal slot, km
+
+    Returns:
+        {
+            "error_km":         float,  # 3D separation distance, km
+            "within_tolerance": bool,   # True if error <= 10.0 km
+        }
+    """
+    error = float(norm(current_position - slot_position))
+    return {
+        "error_km":         error,
+        "within_tolerance": error <= STATION_KEEPING_BOX_KM,
+    }
+
+
+def classify_recovery(
+    current_state: np.ndarray,
+    target_state: np.ndarray,
+) -> dict:
+    """
+    Classify the type of recovery maneuver needed.
+
+    This function does NOT choose optimal strategy.
+    It only identifies the type of correction required.
+
+    Returns:
+        {
+            "case":        str,    # "phasing" | "in_plane_transfer" | "plane_change" | "combined"
+            "delta_r":     float,  # radius difference, km
+            "delta_i":     float,  # inclination difference, radians
+            "delta_raan":  float,  # RAAN difference, radians
+            "delta_phase": float,  # phase angle difference, radians
+        }
+    """
+    p_cur   = get_orbital_params(current_state)
+    p_tgt   = get_orbital_params(target_state)
+    delta_r = abs(p_cur["r"] - p_tgt["r"])
+
+    h_cur     = np.cross(current_state[:3], current_state[3:])
+    h_tgt     = np.cross(target_state[:3],  target_state[3:])
+    h_cur_hat = h_cur / norm(h_cur)
+    h_tgt_hat = h_tgt / norm(h_tgt)
+
+    i_cur   = math.acos(max(-1.0, min(1.0, float(h_cur_hat[2]))))
+    i_tgt   = math.acos(max(-1.0, min(1.0, float(h_tgt_hat[2]))))
+    delta_i = abs(i_cur - i_tgt)
+
+    Z = np.array([0.0, 0.0, 1.0])
+    n_cur = np.cross(Z, h_cur_hat)
+    n_tgt = np.cross(Z, h_tgt_hat)
+    if norm(n_cur) > 1e-10 and norm(n_tgt) > 1e-10:
+        raan_cur   = math.atan2(h_cur_hat[0], -h_cur_hat[1])
+        raan_tgt   = math.atan2(h_tgt_hat[0], -h_tgt_hat[1])
+        delta_raan = abs(raan_cur - raan_tgt)
+        if delta_raan > math.pi:
+            delta_raan = 2 * math.pi - delta_raan
+    else:
+        delta_raan = 0.0
+
+    r_cur_hat  = current_state[:3] / norm(current_state[:3])
+    r_tgt_hat  = target_state[:3]  / norm(target_state[:3])
+    dot        = max(-1.0, min(1.0, float(np.dot(r_cur_hat, r_tgt_hat))))
+    delta_phase = math.acos(dot)
+
+    plane_needed = (delta_i > _PLANE_THRESHOLD_RAD or
+                    delta_raan > _PLANE_THRESHOLD_RAD)
+    if not plane_needed:
+        case = "phasing" if delta_r < _RADIUS_THRESHOLD_KM else "in_plane_transfer"
+    elif delta_i > _PLANE_THRESHOLD_RAD:
+        case = "plane_change" if delta_r < _RADIUS_THRESHOLD_KM else "combined"
+    else:
+        case = "combined"
+
+    return {
+        "case":        case,
+        "delta_r":     float(delta_r),
+        "delta_i":     float(delta_i),
+        "delta_raan":  float(delta_raan),
+        "delta_phase": float(delta_phase),
+    }
+
+
+def generate_recovery_target(
+    current_state: np.ndarray,
+    target_state: np.ndarray,
+) -> np.ndarray:
+    """
+    Generate the target velocity vector for a recovery maneuver.
+
+    This converts the recovery problem into a velocity target.
+    ΔV will be computed later using the velocity vector method.
+
+    Args:
+        current_state : (6,) ECI state of satellite, km / km/s
+        target_state  : (6,) ECI state of nominal slot, km / km/s
+
+    Returns:
+        (3,) ECI target velocity vector, km/s
+    """
+    r_tgt_vec   = target_state[:3]
+    v_tgt_vec   = target_state[3:]
+    r_target    = float(norm(r_tgt_vec))
+
+    h_tgt       = np.cross(r_tgt_vec, v_tgt_vec)
+    h_tgt_hat   = h_tgt / norm(h_tgt)
+    inclination = math.acos(max(-1.0, min(1.0, float(h_tgt_hat[2]))))
+    raan        = math.atan2(h_tgt_hat[0], -h_tgt_hat[1])
+
+    r_cur = float(norm(current_state[:3]))
+    if np.isclose(r_cur, r_target, atol=1e-3):
+        # Same radius: compute correct velocity direction for target plane
+        result = compute_target_velocity_circular(
+            current_state, r_target, inclination, raan
+        )
+        return result["v_target"]
+    else:
+        # Different radius: return target circular velocity directly.
+        # Decision layer handles the radius transfer separately.
+        return v_tgt_vec.copy()
+
+
+def execute_recovery(
+    current_state: np.ndarray,
+    v_target: np.ndarray,
+    mass_state: dict,
+) -> dict:
+    """
+    Execute a recovery maneuver: compute ΔV, split into compliant burns,
+    and apply the fuel model.
+
+    Each burn respects ΔV ≤ 0.015 km/s.
+    600 sec cooldown between burns handled externally.
+
+    Args:
+        current_state : (6,) ECI state, km / km/s
+        v_target      : (3,) ECI target velocity, km/s
+        mass_state    : dict from initialize_mass() — mutated in-place
+
+    Returns:
+        {
+            "burns":       list of (3,) ECI burn vectors, km/s
+            "fuel_result": dict from apply_sequence_with_fuel
+            "total_dV":    float, total delta-V magnitude, km/s
+        }
+    """
+    result      = compute_delta_v_vector(current_state, v_target)
+    burns       = split_delta_v(result["dV_eci"])
+    fuel_result = apply_sequence_with_fuel(mass_state, burns)
+    return {
+        "burns":       burns,
+        "fuel_result": fuel_result,
+        "total_dV":    result["dV"],
+    }
+
+
+def recovery_controller(
+    state: np.ndarray,
+    slot_state: np.ndarray,
+    mass_state: dict,
+    dt: float,
+) -> dict:
+    """
+    Closed-loop recovery controller — combines all 5 recovery modules.
+
+    Pipeline:
+        slot propagation → error check → classification →
+        target generation → fuel-aware execution
+
+    This system is decision-layer ready. Later you can plug in:
+        optimization, risk scoring, time penalty.
+
+    Args:
+        state      : (6,) current satellite ECI state, km / km/s
+        slot_state : (6,) nominal slot reference ECI state, km / km/s
+        mass_state : dict from initialize_mass() — mutated in-place
+        dt         : time elapsed since slot reference epoch, seconds
+
+    Returns:
+        {"action": "none", "error_km": float}  if within 10 km tolerance, or
+        {
+            "action":   "recover",
+            "case":     dict from classify_recovery,
+            "result":   dict from execute_recovery,
+            "error_km": float,
+        }
+    """
+    # Step 1 — propagate nominal slot to current time
+    slot_pos = compute_nominal_slot_position(
+        slot_state[:3], slot_state[3:], dt, MU
+    )
+
+    # Step 2 — compute position error against station-keeping box
+    error = compute_slot_error(state[:3], slot_pos)
+
+    # Step 3 — within tolerance: no action needed
+    if error["within_tolerance"]:
+        return {"action": "none", "error_km": error["error_km"]}
+
+    # Step 4 — classify the type of recovery needed
+    case = classify_recovery(state, slot_state)
+
+    # Step 5 — generate target velocity for recovery
+    v_target = generate_recovery_target(state, slot_state)
+
+    # Step 6 — execute recovery with fuel model
+    result = execute_recovery(state, v_target, mass_state)
+
+    # Step 7 — return
+    return {
+        "action":   "recover",
+        "case":     case,
+        "result":   result,
+        "error_km": error["error_km"],
+    }
+
+
+# ── Multi-satellite mass tracking ─────────────────────────────────────────────
+#
+# Each satellite has independent mass state.
+# Fuel decreases after each burn.
+# Mass is recomputed after every burn.
+# Mass state must persist across simulation steps.
+
+
+def create_satellite_fleet(satellites: list) -> dict:
+    """
+    Initialise an independent mass state for every satellite in the fleet.
+
+    Args:
+        satellites : list of dicts, each with keys:
+                         "id"    — unique satellite identifier
+                         "state" — (6,) ECI state array, km / km/s
+
+    Returns:
+        satellite_states : dict keyed by satellite id, each value:
+            {
+                "state": np.ndarray,  # current ECI state
+                "mass":  dict,        # independent mass state from initialize_mass()
+            }
+
+    Usage:
+        fleet = create_satellite_fleet(satellites)
+        # Apply a maneuver to one satellite only:
+        mass = fleet[sat_id]["mass"]
+        apply_sequence_with_fuel(mass, burns)
+        # Other satellites are unaffected.
+    """
+    # Each satellite has independent mass state — never share a single mass dict
+    satellite_states = {}
+    for sat in satellites:
+        satellite_states[sat["id"]] = {
+            "state": np.array(sat["state"], dtype=float),
+            "mass":  initialize_mass(),   # fresh, independent mass per satellite
+        }
+    return satellite_states
+
+
+def apply_fleet_maneuver(
+    satellite_states: dict,
+    sat_id,
+    burns: list,
+) -> dict:
+    """
+    Apply a burn sequence to one satellite in the fleet, using only that
+    satellite's independent mass state.
+
+    Args:
+        satellite_states : dict from create_satellite_fleet()
+        sat_id           : identifier of the satellite to maneuver
+        burns            : list of (3,) ECI ΔV arrays
+
+    Returns:
+        fuel_result dict from apply_sequence_with_fuel
+
+    Raises:
+        KeyError:   if sat_id not found in fleet
+        ValueError: if insufficient fuel
+    """
+    if sat_id not in satellite_states:
+        raise KeyError(f"Satellite '{sat_id}' not found in fleet")
+
+    # Use only this satellite's mass state — never a global or shared state
+    mass_state = satellite_states[sat_id]["mass"]
+    fuel_result = apply_sequence_with_fuel(mass_state, burns)
+
+    return fuel_result
+
+
+# ── API compatibility shims ───────────────────────────────────────────────────
+# These are thin wrappers used by the API layer (simulate.py, maneuver.py API).
+
+BURN_COOLDOWN_S = 600.0   # seconds — minimum gap between burns on same satellite
+
+
+def fuel_consumed(mass_kg: float, dv_kms: float) -> float:
+    """
+    Tsiolkovsky fuel consumption — API-layer convenience wrapper.
+    Delegates to compute_fuel_used (same equation, same units).
+    """
+    return compute_fuel_used(dv_kms, mass_kg)
+
+
+def plan_evasion_burn(
+    position: list,
+    velocity: list,
+    deb_position: list,
+    deb_velocity: list,
+    tca_seconds: float = 3600.0,
+) -> dict:
+    """
+    Plan a single evasion burn given satellite and debris states.
+    Returns a dict compatible with the /api/maneuver/evasion endpoint.
+    """
+    import math as _math
+    state = np.array(position + velocity)
+    params = get_orbital_params(state)
+
+    # Simple prograde evasion: 10 m/s in T direction
+    R_hat, T_hat, N_hat = build_rtn_frame(state)
+    dv_mag = min(BURN_COOLDOWN_S * 0.0, 0.010)   # 10 m/s
+    dv_mag = 0.010
+    dv_eci = T_hat * dv_mag
+
+    return {
+        "delta_v_rtn":       [0.0, dv_mag, 0.0],
+        "delta_v_eci":       dv_eci.tolist(),
+        "delta_v_magnitude_kms": float(dv_mag),
+        "method":            "prograde_evasion",
+    }
+
+
+def plan_recovery_burn(
+    position: list,
+    velocity: list,
+    slot_position: list,
+    slot_velocity: list,
+) -> dict | None:
+    """
+    Plan a recovery burn to return to nominal slot.
+    Returns None if already within tolerance.
+    """
+    import math as _math
+    state      = np.array(position + velocity)
+    slot_state = np.array(slot_position + slot_velocity)
+    drift = float(norm(np.array(position) - np.array(slot_position)))
+    if drift <= 10.0:
+        return None
+
+    v_target = generate_recovery_target(state, slot_state)
+    dv       = compute_delta_v_vector(state, v_target)
+    T_orbit  = get_orbital_params(state)["T"]
+
+    return {
+        "delta_v_rtn":            dv["dV_rtn"].tolist(),
+        "delta_v_eci":            dv["dV_eci"].tolist(),
+        "delta_v_magnitude_kms":  dv["dV"],
+        "execute_after_seconds":  T_orbit / 2,   # half-orbit later
+    }
+
+
+def check_eol(
+    satellite_id: str,
+    fuel_kg: float,
+    position: list,
+    velocity: list,
+) -> dict | None:
+    """
+    Check if satellite has reached EOL fuel threshold.
+    Returns a graveyard plan dict if EOL, else None.
+    """
+    FUEL_EOL_KG = 10.0
+    GRAVEYARD_KM = 200.0
+    if fuel_kg >= FUEL_EOL_KG:
+        return None
+
+    state  = np.array(position + velocity)
+    params = get_orbital_params(state)
+    r_grave = params["r"] + GRAVEYARD_KM
+
+    try:
+        plan = hohmann_transfer(state, r_grave)
+    except BurnLimitExceeded:
+        plan = {"dV_total": 0.0, "t_transfer": 0.0}
+
+    return {
+        "satellite_id":       satellite_id,
+        "fuel_remaining_kg":  fuel_kg,
+        "graveyard_radius_km": r_grave,
+        "graveyard_altitude_km": r_grave - 6378.137,
+        "transfer_dv_kms":    plan.get("dV_total", 0.0),
+        "transfer_time_s":    plan.get("t_transfer", 0.0),
     }

@@ -25,6 +25,46 @@ const STATUS_COLORS: Record<string, number> = {
 
 const SCALE = 1 / 500;
 const EARTH_RADIUS_KM = 6371;
+
+/** Dotted maneuver preview: only the path ahead of the satellite (past segments stay normal orbit). */
+function forwardTrajectoryScenePoints(
+  satPos: [number, number, number],
+  waypoints: [number, number, number][],
+  toSceneFn: (x: number, y: number, z: number) => THREE.Vector3,
+): THREE.Vector3[] {
+  if (waypoints.length < 2) return [];
+  const S = new THREE.Vector3(...satPos);
+  let bestDist = Infinity;
+  let bestSeg = 0;
+  let bestT = 0;
+
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const A = new THREE.Vector3(...waypoints[i]);
+    const B = new THREE.Vector3(...waypoints[i + 1]);
+    const AB = new THREE.Vector3().subVectors(B, A);
+    const len2 = AB.dot(AB);
+    if (len2 < 1e-18) continue;
+    const t = Math.max(0, Math.min(1, new THREE.Vector3().subVectors(S, A).dot(AB) / len2));
+    const P = A.clone().addScaledVector(AB, t);
+    const d = P.distanceTo(S);
+    if (d < bestDist) {
+      bestDist = d;
+      bestSeg = i;
+      bestT = t;
+    }
+  }
+
+  const A = new THREE.Vector3(...waypoints[bestSeg]);
+  const B = new THREE.Vector3(...waypoints[bestSeg + 1]);
+  const AB = new THREE.Vector3().subVectors(B, A);
+  const start = A.clone().addScaledVector(AB, bestT);
+  const pts: THREE.Vector3[] = [toSceneFn(start.x, start.y, start.z)];
+  for (let j = bestSeg + 1; j < waypoints.length; j++) {
+    const w = toSceneFn(...waypoints[j]);
+    if (pts[pts.length - 1].distanceTo(w) > 1e-4) pts.push(w);
+  }
+  return pts.length >= 2 ? pts : [];
+}
 const J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
 const EARTH_OMEGA = 7.2921150e-5;
 const toScene = (x: number, y: number, z: number) =>
@@ -158,6 +198,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     satHitMeshes: Map<string, THREE.Mesh>;
     debrisMeshes: THREE.Mesh[];
     orbitLines: Map<string, THREE.Line>;
+    maneuverTrajectoryLines: Map<string, THREE.Line>;
     stationHitMeshes: Map<string, THREE.Mesh>;
     stationCones: Map<string, THREE.Mesh>;
     ghostOrbit: THREE.Line | null;
@@ -421,6 +462,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     const satGroups = new Map<string, THREE.Group>();
     const satHitMeshes = new Map<string, THREE.Mesh>();
     const orbitLines = new Map<string, THREE.Line>();
+    const maneuverTrajectoryLines = new Map<string, THREE.Line>();  // dotted preview paths
 
     satellites.forEach(sat => {
       const group = buildSatelliteGroup(STATUS_COLORS[sat.status]);
@@ -609,6 +651,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
 
     sceneRef.current = {
       renderer, scene, camera, satGroups, satHitMeshes, debrisMeshes, orbitLines,
+      maneuverTrajectoryLines,
       stationHitMeshes, stationCones,
       ghostOrbit: ghostOrbitLine, flareRing, flareProgress: 0,
       exhaust, exhaustActive: false,
@@ -731,6 +774,67 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       if (isFlaring) {
         s.exhaustOrigin.copy(pos);
         s.exhaustDir.copy(pos).normalize();
+      }
+    });
+
+    // ── Maneuver trajectory preview lines ────────────────────────────────
+    // For each satellite: if it has a pending maneuver trajectory, draw a
+    // dotted line through the waypoints. Once the satellite has no pending
+    // burns, remove the line.
+    satellites.forEach(sat => {
+      const existing = s.maneuverTrajectoryLines.get(sat.id);
+
+      if (!sat.hasPendingBurns || !sat.maneuverTrajectory || sat.maneuverTrajectory.length < 2) {
+        // No pending burns — remove trajectory line if it exists
+        if (existing) {
+          s.scene.remove(existing);
+          existing.geometry.dispose();
+          (existing.material as THREE.Material).dispose();
+          s.maneuverTrajectoryLines.delete(sat.id);
+        }
+        return;
+      }
+
+      const pts = forwardTrajectoryScenePoints(sat.pos, sat.maneuverTrajectory, toScene);
+      if (pts.length < 2) {
+        if (existing) {
+          s.scene.remove(existing);
+          existing.geometry.dispose();
+          (existing.material as THREE.Material).dispose();
+          s.maneuverTrajectoryLines.delete(sat.id);
+        }
+        return;
+      }
+
+      if (existing) {
+        // Update geometry in-place
+        existing.geometry.setFromPoints(pts);
+        (existing as THREE.Line).computeLineDistances();
+      } else {
+        // Create new dashed line
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        const mat = new THREE.LineDashedMaterial({
+          color: sat.status === 'critical' ? 0xff3b3b : sat.status === 'warning' ? 0xffb800 : 0x00ff88,
+          dashSize: 0.25,
+          gapSize: 0.15,
+          transparent: true,
+          opacity: 0.75,
+          linewidth: 1,
+        });
+        const line = new THREE.Line(geo, mat);
+        line.computeLineDistances();
+        s.scene.add(line);
+        s.maneuverTrajectoryLines.set(sat.id, line);
+      }
+    });
+
+    // Clean up lines for satellites no longer in the list
+    s.maneuverTrajectoryLines.forEach((line, id) => {
+      if (!satellites.find(sv => sv.id === id)) {
+        s.scene.remove(line);
+        line.geometry.dispose();
+        (line.material as THREE.Material).dispose();
+        s.maneuverTrajectoryLines.delete(id);
       }
     });
   }, [tick, selectedId, hoveredId, flaringId]);
