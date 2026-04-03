@@ -141,6 +141,9 @@ function createExhaustSystem(scene: THREE.Scene) {
 
 export default function GlobeScene({ satellites, debris, groundStations, simTime, selectedId, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
+  // Ref so the animation loop always reads the latest hoveredId without re-mounting
+  const hoveredIdRef = useRef<string | null>(null);
+  useEffect(() => { hoveredIdRef.current = hoveredId; }, [hoveredId]);
   const sceneRef = useRef<{
     renderer: THREE.WebGLRenderer;
     scene: THREE.Scene;

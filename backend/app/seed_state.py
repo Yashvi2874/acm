@@ -37,40 +37,6 @@ def mongodb_collection_counts() -> dict[str, int] | None:
 MU = 398600.4418
 RE = 6378.137
 
-# ── Generate default 50-sat + 50-debris constellation ────────────────────────
-import random as _rnd
-_rnd.seed(42)
-
-def _circ_vel(alt):
-    return math.sqrt(MU / (RE + alt))
-
-def _orbit_state(alt, inc_deg, raan_deg, ta_deg):
-    r = RE + alt; v = _circ_vel(alt)
-    inc = math.radians(inc_deg); raan = math.radians(raan_deg); ta = math.radians(ta_deg)
-    px = r*math.cos(ta); py = r*math.sin(ta)
-    pos = [px*math.cos(raan)-py*math.cos(inc)*math.sin(raan),
-           px*math.sin(raan)+py*math.cos(inc)*math.cos(raan),
-           py*math.sin(inc)]
-    vx = -v*math.sin(ta); vy = v*math.cos(ta)
-    vel = [vx*math.cos(raan)-vy*math.cos(inc)*math.sin(raan),
-           vx*math.sin(raan)+vy*math.cos(inc)*math.cos(raan),
-           vy*math.sin(inc)]
-    return [round(x,4) for x in pos], [round(x,6) for x in vel]
-
-def _default_objects():
-    objs = []
-    for i in range(50):
-        pos, vel = _orbit_state(550, 53, (360/50)*i, _rnd.uniform(0,360))
-        objs.append({"id": f"SAT-{i+1:03d}", "object_type": "satellite",
-                     "position": pos, "velocity": vel,
-                     "fuel_kg": round(_rnd.uniform(0.3,0.5),4), "mass_kg": 4.0, "status": "nominal"})
-    for i in range(50):
-        pos, vel = _orbit_state(_rnd.uniform(400,800), _rnd.uniform(0,98),
-                                _rnd.uniform(0,360), _rnd.uniform(0,360))
-        objs.append({"id": f"DEB-{10000+i:05d}", "object_type": "debris",
-                     "position": pos, "velocity": vel, "fuel_kg": 0.0, "mass_kg": 0.1, "status": "nominal"})
-    return objs
-
 # ── Save / Load ───────────────────────────────────────────────────────────────
 
 def save_state(simulation_state) -> None:
@@ -92,12 +58,10 @@ def save_state(simulation_state) -> None:
 
 def load_objects() -> list[dict]:
     """
-    Load objects in priority order:
-    1. Atlas (satellites + debris collections)
-    2. Local JSON snapshot (_sim_state.json)
-    3. Generated defaults (50 sats + 50 debris)
+    Load objects exclusively from Atlas.
+    Returns empty list if Atlas is unreachable or has no data.
+    Never generates synthetic defaults — only real DB data is shown.
     """
-    # ── Try Atlas first ───────────────────────────────────────────────────────
     try:
         from pymongo import MongoClient
         ATLAS_URI = os.getenv("MONGO_ATLAS_URI", _DEFAULT_ATLAS_URI)
@@ -114,8 +78,8 @@ def load_objects() -> list[dict]:
             r = s.get("r", {}); v = s.get("v", {})
             objects.append({
                 "id": s["id"], "object_type": "satellite",
-                "position": [r.get("x",0), r.get("y",0), r.get("z",0)],
-                "velocity": [v.get("x",0), v.get("y",0), v.get("z",0)],
+                "position": [r.get("x", 0), r.get("y", 0), r.get("z", 0)],
+                "velocity": [v.get("x", 0), v.get("y", 0), v.get("z", 0)],
                 "fuel_kg": float(s.get("fuel_kg", 0.5)),
                 "mass_kg": float(s.get("mass_kg", 4.0)),
                 "status": s.get("status", "nominal"),
@@ -124,34 +88,18 @@ def load_objects() -> list[dict]:
             r = d.get("r", {}); v = d.get("v", {})
             objects.append({
                 "id": d["id"], "object_type": "debris",
-                "position": [r.get("x",0), r.get("y",0), r.get("z",0)],
-                "velocity": [v.get("x",0), v.get("y",0), v.get("z",0)],
+                "position": [r.get("x", 0), r.get("y", 0), r.get("z", 0)],
+                "velocity": [v.get("x", 0), v.get("y", 0), v.get("z", 0)],
                 "fuel_kg": 0.0, "mass_kg": 0.1, "status": "nominal",
             })
 
-        if objects:
-            logger.info("Loaded %d objects from Atlas (sats=%d debris=%d)",
-                        len(objects), len(sats), len(debs))
-            return objects
-        logger.info("Atlas connected but empty — falling through to local state")
+        logger.info("Loaded %d objects from Atlas (sats=%d debris=%d)",
+                    len(objects), len(sats), len(debs))
+        return objects
+
     except Exception as e:
-        logger.warning("Atlas load failed (%s) — trying local state", str(e)[:60])
-
-    # ── Try local JSON snapshot ───────────────────────────────────────────────
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE) as f:
-                data = json.load(f)
-            objs = data.get("objects", [])
-            if objs:
-                logger.info("Loaded %d objects from %s", len(objs), STATE_FILE)
-                return objs
-        except Exception as e:
-            logger.warning("load_state failed: %s — using defaults", e)
-
-    # ── Generate defaults ─────────────────────────────────────────────────────
-    logger.info("No saved state — generating default 50-sat + 50-debris constellation")
-    return _default_objects()
+        logger.warning("Atlas load failed (%s) — starting with empty state", str(e)[:80])
+        return []
 
 
 def apply_objects(simulation_state, objects: list[dict]) -> None:
