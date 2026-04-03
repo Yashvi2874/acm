@@ -438,6 +438,7 @@ export default function App() {
             satellite={selectedSat}
             maneuvers={maneuvers}
             onPlanManeuver={handleOpenModal}
+            onClose={() => setSelectedId(null)}
           />
         </div>
       </div>
@@ -454,8 +455,8 @@ export default function App() {
 
       {showTimeline && (
         <ManeuverTimeline
-          maneuvers={maneuvers}
           satellites={satellites}
+          simTime={simTime}
           onClose={() => setShowTimeline(false)}
         />
       )}
