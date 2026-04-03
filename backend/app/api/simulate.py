@@ -192,7 +192,7 @@ async def simulate_step(req: StepRequest):
                             sat.fuel_kg = sat_data["fuel_kg"]
                         if "status" in sat_data:
                             sat.status = sat_data["status"]
-                        sat.last_updated = datetime.fromisoformat(sat_data.get("updated_at", simulation_state.sim_time.isoformat())).replace(tzinfo=timezone.utc)
+                        sat.last_updated = datetime.fromisoformat(sat_data.get("updated_at", simulation_state.sim_time.isoformat()).replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
                     for deb_data in data.get("debris", []):
                         deb = simulation_state.get_or_create_debris(deb_data["id"], 
                             [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]], 
@@ -200,7 +200,7 @@ async def simulate_step(req: StepRequest):
                         deb.position = [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]]
                         deb.velocity = [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]]
                         deb.db_velocity = list(deb.velocity)
-                        deb.last_updated = datetime.fromisoformat(deb_data.get("updated_at", simulation_state.sim_time.isoformat())).replace(tzinfo=timezone.utc)
+                        deb.last_updated = datetime.fromisoformat(deb_data.get("updated_at", simulation_state.sim_time.isoformat()).replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
             except Exception as e:
                 # Log but continue
                 print(f"Failed to recompute from DB: {e}")
@@ -342,7 +342,6 @@ async def simulate_step(req: StepRequest):
                 eol_flags.append(eol)
                 
                 # Auto-Deorbit / Graveyard burn
-                from state_store import ScheduledBurn
                 graveyard_burn = ScheduledBurn(
                     burn_id=f"eol_graveyard_{sid}",
                     satellite_id=sid,
@@ -352,18 +351,19 @@ async def simulate_step(req: StepRequest):
                 simulation_state.enqueue_burn(graveyard_burn)
 
         # ── 7. Conjunction assessment ─────────────────────────────────────
-        all_bodies = (
-            [{"id": sid, "position": s.position, "velocity": s.velocity}
-             for sid, s in simulation_state.satellites.items()]
-            + [{"id": did, "position": d.position, "velocity": d.velocity}
-               for did, d in simulation_state.debris.items()]
-        )
-        raw_conjunctions = check_conjunctions(all_bodies)
+        satellites_list = [{"id": sid, "position": s.position, "velocity": s.velocity} for sid, s in simulation_state.satellites.items()]
+        debris_list = [{"id": did, "position": d.position, "velocity": d.velocity} for did, d in simulation_state.debris.items()]
+        
+        from physics.conjunction import find_conjunctions
+        
+        # Use 5400s (1.5 hours) horizon to maintain real-time performance while perfectly predicting CDMs
+        raw_conjunctions = find_conjunctions(satellites_list, debris_list, horizon_seconds=5400.0)
+        
         for c in raw_conjunctions:
             simulation_state.add_cdm(CDMWarning(
                 object_1_id=c["sat1"],
                 object_2_id=c["sat2"],
-                tca=simulation_state.sim_time,
+                tca=simulation_state.sim_time + timedelta(seconds=c["tca_seconds"]),
                 miss_distance_km=c["miss_distance_km"],
                 issued_at=simulation_state.sim_time,
             ))
@@ -388,7 +388,6 @@ async def simulate_step(req: StepRequest):
                         required_fuel = fuel_consumed(sat.mass_kg, dv_kms)
                         
                         if required_fuel <= sat.fuel_kg:
-                            from state_store import ScheduledBurn
                             # Execute 60s before TCA for safety, but enforce hardcoded 10-second API latency
                             safe_execution_time = c["tca_seconds"] - 60.0
                             delay_seconds = max(10.0, safe_execution_time)

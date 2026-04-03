@@ -30,6 +30,9 @@ const EARTH_OMEGA = 7.2921150e-5;
 const toScene = (x: number, y: number, z: number) =>
   new THREE.Vector3(x * SCALE, y * SCALE, z * SCALE);
 
+const eciToSceneVec = (x: number, y: number, z: number) =>
+  new THREE.Vector3(x, z, -y);
+
 function latLonToEcefScene(lat: number, lon: number, radiusKm = EARTH_RADIUS_KM + 25) {
   const phi = THREE.MathUtils.degToRad(90 - lat);
   const theta = THREE.MathUtils.degToRad(lon + 180);
@@ -61,12 +64,14 @@ function buildOrbitPointsFromVectors(p0: THREE.Vector3, u: THREE.Vector3): THREE
 function buildOrbitPoints(radius: number, inclination: number): THREE.Vector3[] {
   const pts: THREE.Vector3[] = [];
   for (let a = 0; a <= 360; a += 2) {
-    const rad = (a * Math.PI) / 180;
-    pts.push(toScene(
-      radius * Math.cos(rad) * Math.cos(inclination),
-      radius * Math.sin(rad),
-      radius * Math.cos(rad) * Math.sin(inclination)
-    ));
+    const v = (a * Math.PI) / 180;
+    const px = radius * Math.cos(v);
+    const py = radius * Math.sin(v);
+    const x = px;
+    const y = py * Math.cos(inclination);
+    const z = py * Math.sin(inclination);
+    const vec = eciToSceneVec(x, y, z);
+    pts.push(toScene(vec.x, vec.y, vec.z));
   }
   return pts;
 }
@@ -143,6 +148,7 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
   const mountRef = useRef<HTMLDivElement>(null);
   // Ref so the animation loop always reads the latest hoveredId without re-mounting
   const hoveredIdRef = useRef<string | null>(null);
+  const clickedInGlobeRef = useRef<string | null>(null);
   useEffect(() => { hoveredIdRef.current = hoveredId; }, [hoveredId]);
   const sceneRef = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -211,8 +217,8 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
     const earth = new THREE.Mesh(new THREE.SphereGeometry(R, 64, 64), earthMat);
     earthGroup.add(earth);
 
-    // Load NASA Blue Marble textures from CDN with CORS handling
-    const BASE = 'https://unpkg.com/three@0.160.0/examples/textures/planets';
+    // Load local Earth textures to completely eliminate CORS and 404 errors
+    const BASE = '/textures/planets';
     
     // Helper to load textures with error handling
     const loadTexture = (url: string, onLoad: (tex: THREE.Texture) => void) => {
@@ -371,15 +377,15 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
         flatShading: true,
       }));
       
-      const p = new THREE.Vector3(d.x, d.y, d.z);
-      const v = new THREE.Vector3(d.vx, d.vy, d.vz);
+      const p = eciToSceneVec(d.x, d.y, d.z);
+      const v = eciToSceneVec(d.vx, d.vy, d.vz);
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
       
       mesh.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
       
-      mesh.position.copy(toScene(d.x, d.y, d.z));
+      mesh.position.copy(toScene(p.x, p.y, p.z));
       mesh.rotation.set(rand() * Math.PI * 2, rand() * Math.PI * 2, rand() * Math.PI * 2);
       mesh.userData.rotSpeed = { x: (rand() - 0.5) * 0.02, y: (rand() - 0.5) * 0.02, z: (rand() - 0.5) * 0.02 };
       
@@ -394,8 +400,11 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
     const nomOrbitLines = new Map<string, THREE.Line>();
 
     satellites.forEach(sat => {
+      const p = eciToSceneVec(...sat.pos);
+      const v = eciToSceneVec(...sat.vel);
+
       const group = buildSatelliteGroup(STATUS_COLORS[sat.status]);
-      group.position.copy(toScene(...sat.pos));
+      group.position.copy(toScene(p.x, p.y, p.z));
       group.userData.satId = sat.id;
       group.userData.orbit = { r: sat.orbitRadius, phase: sat.orbitPhase, speed: sat.orbitSpeed, inc: sat.orbitInclination };
       scene.add(group);
@@ -405,13 +414,11 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
         new THREE.SphereGeometry(0.55, 8, 8),
         new THREE.MeshBasicMaterial({ visible: false })
       );
-      hitMesh.position.copy(toScene(...sat.pos));
+      hitMesh.position.copy(toScene(p.x, p.y, p.z));
       hitMesh.userData.satId = sat.id;
       scene.add(hitMesh);
       satHitMeshes.set(sat.id, hitMesh);
 
-      const p = new THREE.Vector3(...sat.pos);
-      const v = new THREE.Vector3(...sat.vel);
       let r_mag = p.length();
       let n = new THREE.Vector3().crossVectors(p, v).normalize();
       let u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
@@ -424,8 +431,8 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
       orbitLines.set(sat.id, orbitLine);
 
       if (sat.nomPos && sat.nomVel) {
-        const np = new THREE.Vector3(...sat.nomPos);
-        const nv = new THREE.Vector3(...sat.nomVel);
+        const np = eciToSceneVec(...sat.nomPos);
+        const nv = eciToSceneVec(...sat.nomVel);
         const nr_mag = np.length();
         const nn = new THREE.Vector3().crossVectors(np, nv).normalize();
         const nu = new THREE.Vector3().crossVectors(nn, np).normalize().multiplyScalar(nr_mag);
@@ -483,7 +490,11 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
       mouse.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(mouse, camera);
       const hits = raycaster.intersectObjects(Array.from(satHitMeshes.values()));
-      if (hits.length > 0) onSelect(hits[0].object.userData.satId);
+      if (hits.length > 0) {
+        const targetId = hits[0].object.userData.satId;
+        clickedInGlobeRef.current = targetId;
+        onSelect(targetId);
+      }
     };
     const onMouseMoveHover = (e: MouseEvent) => {
       const rect = mount.getBoundingClientRect();
@@ -675,11 +686,12 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
 
     // Add new satellites
     satellites.forEach(sat => {
+      const p = eciToSceneVec(...sat.pos);
+      const v = eciToSceneVec(...sat.vel);
+
       const group = buildSatelliteGroup(STATUS_COLORS[sat.status]);
-      group.position.copy(toScene(...sat.pos));
+      group.position.copy(toScene(p.x, p.y, p.z));
       group.userData.satId = sat.id;
-      const p = new THREE.Vector3(...sat.pos);
-      const v = new THREE.Vector3(...sat.vel);
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
@@ -691,7 +703,7 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
         new THREE.SphereGeometry(0.55, 8, 8),
         new THREE.MeshBasicMaterial({ visible: false })
       );
-      hitMesh.position.copy(toScene(...sat.pos));
+      hitMesh.position.copy(toScene(p.x, p.y, p.z));
       hitMesh.userData.satId = sat.id;
       s.scene.add(hitMesh);
       s.satHitMeshes.set(sat.id, hitMesh);
@@ -704,8 +716,8 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
       s.orbitLines.set(sat.id, orbitLine);
 
       if (sat.nomPos && sat.nomVel) {
-        const np = new THREE.Vector3(...sat.nomPos);
-        const nv = new THREE.Vector3(...sat.nomVel);
+        const np = eciToSceneVec(...sat.nomPos);
+        const nv = eciToSceneVec(...sat.nomVel);
         const nr_mag = np.length();
         const nn = new THREE.Vector3().crossVectors(np, nv).normalize();
         const nu = new THREE.Vector3().crossVectors(nn, np).normalize().multiplyScalar(nr_mag);
@@ -740,15 +752,15 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
         flatShading: true,
       }));
       
-      const p = new THREE.Vector3(d.x, d.y, d.z);
-      const v = new THREE.Vector3(d.vx, d.vy, d.vz);
+      const p = eciToSceneVec(d.x, d.y, d.z);
+      const v = eciToSceneVec(d.vx, d.vy, d.vz);
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
       
       mesh.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
       
-      mesh.position.copy(toScene(d.x, d.y, d.z));
+      mesh.position.copy(toScene(p.x, p.y, p.z));
       mesh.rotation.set(rand() * Math.PI * 2, rand() * Math.PI * 2, rand() * Math.PI * 2);
       mesh.userData.rotSpeed = { x: (rand() - 0.5) * 0.02, y: (rand() - 0.5) * 0.02, z: (rand() - 0.5) * 0.02 };
       
@@ -771,12 +783,24 @@ export default function GlobeScene({ satellites = [], debris = [], groundStation
     const s = sceneRef.current;
     if (!s) return;
     s.hoveredId = hoveredId;
-    if (selectedId) {
+    if (selectedId && selectedId !== clickedInGlobeRef.current) {
        s.targetRadius = 6.0;
        s.isAutoZooming = true;
-    } else {
+       // Prevent camera from clipping inside Earth by pointing the offset outwards
+       const group = s.satGroups.get(selectedId);
+       if (group) {
+         const v = group.position.clone().normalize();
+         s.phi = Math.acos(v.y);
+         s.theta = Math.atan2(v.x, v.z);
+       }
+    } else if (!selectedId) {
        s.targetRadius = 28;
        s.isAutoZooming = true;
+    }
+    
+    // Reset the ref on every selectedId change so that subsequent left-bar clicks zoom
+    if (selectedId !== clickedInGlobeRef.current) {
+      clickedInGlobeRef.current = null;
     }
 
     satellites.forEach(sat => {

@@ -1,0 +1,50 @@
+﻿acm-backend-1  |     sim_burn = ScheduledBurn(
+acm-backend-1  | UnboundLocalError: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | 2026-04-03 23:34:32,957 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | INFO:     172.18.0.5:58614 - "GET /api/telemetry/objects HTTP/1.1" 200 OK
+acm-backend-1  | INFO:     127.0.0.1:45418 - "GET /health HTTP/1.1" 200 OK
+acm-backend-1  | 2026-04-03 23:34:40,238 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | Failed to recompute from DB: Invalid isoformat string: '2026-04-03T23:31:07.928Z'
+acm-backend-1  | 2026-04-03 23:34:40,242 - background_propagator - ERROR - Failed to execute autonomous ACM pipeline: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | Traceback (most recent call last):
+acm-backend-1  |   File "/app/background_propagator.py", line 121, in _propagate_and_persist
+acm-backend-1  |     await simulate_step(StepRequest(
+acm-backend-1  |   File "/app/api/simulate.py", line 310, in simulate_step
+acm-backend-1  |     sim_burn = ScheduledBurn(
+acm-backend-1  | UnboundLocalError: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | INFO:     127.0.0.1:41722 - "GET /health HTTP/1.1" 200 OK
+acm-backend-1  | 2026-04-03 23:34:51,151 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | Failed to recompute from DB: Invalid isoformat string: '2026-04-03T23:31:07.928Z'
+acm-backend-1  | 2026-04-03 23:34:51,156 - background_propagator - ERROR - Failed to execute autonomous ACM pipeline: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | Traceback (most recent call last):
+acm-backend-1  |   File "/app/background_propagator.py", line 121, in _propagate_and_persist
+acm-backend-1  |     await simulate_step(StepRequest(
+acm-backend-1  |   File "/app/api/simulate.py", line 310, in simulate_step
+acm-backend-1  |     sim_burn = ScheduledBurn(
+acm-backend-1  | UnboundLocalError: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | INFO:     172.18.0.5:43570 - "GET /api/maneuver/pending HTTP/1.1" 200 OK
+acm-backend-1  | INFO:     172.18.0.5:43586 - "GET /api/maneuver/history HTTP/1.1" 200 OK
+acm-backend-1  | 2026-04-03 23:34:52,300 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | INFO:     172.18.0.5:43572 - "GET /api/telemetry/objects HTTP/1.1" 200 OK
+acm-backend-1  | INFO:     127.0.0.1:39762 - "GET /health HTTP/1.1" 200 OK
+acm-backend-1  | 2026-04-03 23:35:01,192 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | Failed to recompute from DB: Invalid isoformat string: '2026-04-03T23:31:07.928Z'
+acm-backend-1  | 2026-04-03 23:35:01,230 - background_propagator - ERROR - Failed to execute autonomous ACM pipeline: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | Traceback (most recent call last):
+acm-backend-1  |   File "/app/background_propagator.py", line 121, in _propagate_and_persist
+acm-backend-1  |     await simulate_step(StepRequest(
+acm-backend-1  |   File "/app/api/simulate.py", line 310, in simulate_step
+acm-backend-1  |     sim_burn = ScheduledBurn(
+acm-backend-1  | UnboundLocalError: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | INFO:     127.0.0.1:50582 - "GET /health HTTP/1.1" 200 OK
+acm-backend-1  | 2026-04-03 23:35:11,264 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | Failed to recompute from DB: Invalid isoformat string: '2026-04-03T23:31:07.928Z'
+acm-backend-1  | 2026-04-03 23:35:11,269 - background_propagator - ERROR - Failed to execute autonomous ACM pipeline: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | Traceback (most recent call last):
+acm-backend-1  |   File "/app/background_propagator.py", line 121, in _propagate_and_persist
+acm-backend-1  |     await simulate_step(StepRequest(
+acm-backend-1  |   File "/app/api/simulate.py", line 310, in simulate_step
+acm-backend-1  |     sim_burn = ScheduledBurn(
+acm-backend-1  | UnboundLocalError: local variable 'ScheduledBurn' referenced before assignment
+acm-backend-1  | 2026-04-03 23:35:13,691 - httpx - INFO - HTTP Request: GET http://go-adapter:8080/objects "HTTP/1.1 200 OK"
+acm-backend-1  | INFO:     172.18.0.5:60562 - "GET /api/telemetry/objects HTTP/1.1" 200 OK

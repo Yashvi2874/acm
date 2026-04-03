@@ -10,7 +10,7 @@ Welcome to ACM! We've built a multi-service orbital operations stack designed to
 
 Before diving into the code, check out our project report and demonstration video where we walk through the live dashboard and autonomous evasion features:
 
-- 📄 **[Project Report (Google Drive)](#)** *(Replace with your actual report drive link)*
+- 📄 **[Project Report (Google Drive)](https://drive.google.com/file/d/1MHk03WyyvrY_CuxXR0fSpRdJPD7w33YF/view?usp=sharing)**
 - 🎬 **[Watch the ACM Demo Video (Google Drive)](#)** *(Replace with your actual video drive link)*
 
 ## The Problem
@@ -57,6 +57,12 @@ MongoDB Atlas (Central Data Backbone)
 1. **Layer 1: Data Ingestion (Go):** Sits at the edge catching incoming ECI telemetry. It leverages lightweight goroutines and buffered channels to survive massive traffic spikes.
 2. **Layer 2: Orbit Prediction & Risk (Python):** This is the brain. It uses KD-Trees to prune unnecessary pairwise checks and projects orbits forward via Adaptive-timestep 4th-Order Runge-Kutta (RK4) physics.
 3. **Layer 3: Maneuvering (Python):** Calculates the actual evasions (Hohmann transfers, Radial burns, Plane Changes) natively inside the RTN frame, figuring out the best optimal path forward.
+
+### Architecture Visualizations
+
+| Physics & Risk Engine | Autonomous Decision Layer |
+|:---:|:---:|
+| ![Physics Engine](docs/screenshots/physics.png) | ![Decision Layer](docs/screenshots/descision.png) |
 
 ---
 

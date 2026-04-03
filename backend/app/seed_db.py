@@ -136,7 +136,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8000")
     parser.add_argument("--satellites", type=int, default=int(os.getenv("SATELLITE_COUNT", "50")))
-    parser.add_argument("--debris", type=int, default=int(os.getenv("DEBRIS_COUNT", "10000")))
+    parser.add_argument("--debris", type=int, default=int(os.getenv("DEBRIS_COUNT", "1000")))
     parser.add_argument("--batch", type=int, default=int(os.getenv("BATCH_SIZE", "200")))
     args = parser.parse_args()
 

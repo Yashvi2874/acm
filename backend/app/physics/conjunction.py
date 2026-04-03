@@ -114,32 +114,25 @@ def compute_tca(
 def time_of_closest_approach(
     sat_state: list[float],
     deb_state: list[float],
-    t0: float = 0.0,
-    max_seconds: float = 3600.0,
+    t_bound_min: float,
+    t_bound_max: float,
 ) -> tuple[float, float]:
     """
-    Refine TCA by minimising |r_sat(t) - r_deb(t)| with minimize_scalar (bounded).
-    Returns (tca_seconds, miss_distance_km).
+    Refine TCA by minimising |dr| within a highly localized window where they are known to be close.
     """
     s0 = np.array(sat_state, dtype=np.float64)
     d0 = np.array(deb_state, dtype=np.float64)
 
-    if max_seconds <= 0.0:
-        return t0, float(np.linalg.norm(s0[:3] - d0[:3]))
-
     def separation(dt: float) -> float:
-        if dt <= 0.0:
-            return float(np.linalg.norm(s0[:3] - d0[:3]))
-        sub = min(dt, 30.0)
-        s = propagate_rk4(s0.tolist(), dt, sub)[-1]
-        d = propagate_rk4(d0.tolist(), dt, sub)[-1]
+        s = propagate_rk4(s0.tolist(), dt, min(dt, 30.0))[-1]
+        d = propagate_rk4(d0.tolist(), dt, min(dt, 30.0))[-1]
         return float(np.linalg.norm(np.array(s[:3]) - np.array(d[:3])))
 
     result = minimize_scalar(
         separation,
-        bounds=(max(t0, 1e-3), t0 + max_seconds),
+        bounds=(t_bound_min, t_bound_max),
         method="bounded",
-        options={"xatol": 1.0},
+        options={"xatol": 0.5},
     )
     return float(result.x), float(result.fun)
 
@@ -150,16 +143,9 @@ def find_conjunctions(
     horizon_seconds: float = 86400.0,
     threshold_km: float = COARSE_KM,
 ) -> list[dict]:
-    """
-    Full look-ahead conjunction screen.
-
-    Steps:
-      1. Propagate all debris + satellites over horizon via IVP (adaptive, fast).
-      2. At each coarse time step build KDTree from debris positions.
-      3. Query each satellite — O(N log M) per step.
-      4. Refine TCA for candidate pairs only with minimize_scalar.
-      5. Flag < CRITICAL_KM as CRITICAL.
-    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if not satellites or not debris:
         return []
 
@@ -169,69 +155,70 @@ def find_conjunctions(
     sat_ids = [s["id"] for s in satellites]
     deb_ids = [d["id"] for d in debris]
 
-    sat_trajs = [
-        propagate_ivp(
-            list(s["position"]) + list(s["velocity"]),
-            horizon_seconds,
-            t_eval_step=COARSE_STEP_S,
-        )
-        for s in satellites
-    ]
-    deb_trajs = [
-        propagate_ivp(
-            list(d["position"]) + list(d["velocity"]),
-            horizon_seconds,
-            t_eval_step=COARSE_STEP_S,
-        )
-        for d in debris
-    ]
+    sat_trajs = [propagate_ivp(list(s["position"]) + list(s["velocity"]), horizon_seconds, t_eval_step=COARSE_STEP_S) for s in satellites]
+    deb_trajs = [propagate_ivp(list(d["position"]) + list(d["velocity"]), horizon_seconds, t_eval_step=COARSE_STEP_S) for d in debris]
 
-    candidate_pairs: set[tuple[str, str]] = set()
+    # Map candidate pair to list of approx collision times
+    candidates: dict[tuple[str, str], list[float]] = {}
+    total_kdtree_matches = 0
 
-    for step_i in range(len(time_grid)):
-        deb_pos = np.array([
-            deb_trajs[j][min(step_i, len(deb_trajs[j]) - 1)][:3]
-            for j in range(len(debris))
-        ])
+    for step_i, t_approx in enumerate(time_grid):
+        deb_pos = np.array([deb_trajs[j][min(step_i, len(deb_trajs[j]) - 1)][:3] for j in range(len(debris))])
         tree = KDTree(deb_pos)
 
         for si in range(len(satellites)):
-            sat_pos = np.array(
-                sat_trajs[si][min(step_i, len(sat_trajs[si]) - 1)][:3]
-            )
-            for di in tree.query_ball_point(sat_pos, r=threshold_km):
-                candidate_pairs.add((sat_ids[si], deb_ids[di]))
+            sat_pos = np.array(sat_trajs[si][min(step_i, len(sat_trajs[si]) - 1)][:3])
+            matches = tree.query_ball_point(sat_pos, r=threshold_km)
+            for di in matches:
+                total_kdtree_matches += 1
+                pair = (sat_ids[si], deb_ids[di])
+                if pair not in candidates:
+                    candidates[pair] = []
+                candidates[pair].append(t_approx)
 
-    if not candidate_pairs:
+    if not candidates:
+        logger.debug(f"0 CDMs generated. No objects within {threshold_km}km over {horizon_seconds}s.")
         return []
 
     results = []
-    for sat_id, deb_id in candidate_pairs:
+    for (sat_id, deb_id), times in candidates.items():
         si = sat_ids.index(sat_id)
         di = deb_ids.index(deb_id)
-
         sat_state = list(satellites[si]["position"]) + list(satellites[si]["velocity"])
-        deb_state = list(debris[di]["position"])     + list(debris[di]["velocity"])
+        deb_state = list(debris[di]["position"]) + list(debris[di]["velocity"])
 
-        tca_s, miss_km = time_of_closest_approach(
-            sat_state, deb_state,
-            t0=0.0,
-            max_seconds=min(horizon_seconds, 3600.0),
-        )
+        # Multiple approaches might occur over 24h, cluster close times
+        clusters = []
+        current_cluster = []
+        for t in sorted(times):
+            if not current_cluster or t - current_cluster[-1] <= COARSE_STEP_S * 2:
+                current_cluster.append(t)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [t]
+        if current_cluster:
+            clusters.append(current_cluster)
 
-        if miss_km > FINE_KM:
-            continue
-
-        results.append({
-            "sat1":             sat_id,
-            "sat2":             deb_id,
-            "tca_seconds":      round(tca_s, 1),
-            "miss_distance_km": round(miss_km, 4),
-            "miss_distance_m":  round(miss_km * 1000.0, 1),
-            "severity":         "CRITICAL" if miss_km < CRITICAL_KM else "WARNING",
-        })
+        for cluster in clusters:
+            t_min = max(0.0, cluster[0] - COARSE_STEP_S)
+            t_max = min(horizon_seconds, cluster[-1] + COARSE_STEP_S)
+            
+            tca_s, miss_km = time_of_closest_approach(sat_state, deb_state, t_bound_min=t_min, t_bound_max=t_max)
+            
+            if miss_km <= FINE_KM:
+                severity = "CRITICAL" if miss_km < CRITICAL_KM else "WARNING"
+                logger.debug(f"Closest approach: {miss_km:.4f} km -> {severity} (tau={tca_s:.1f}s) for {sat_id}/{deb_id}")
+                results.append({
+                    "sat1": sat_id,
+                    "sat2": deb_id,
+                    "tca_seconds": round(tca_s, 1),
+                    "miss_distance_km": round(miss_km, 4),
+                    "miss_distance_m": round(miss_km * 1000.0, 1),
+                    "severity": severity,
+                })
 
     results.sort(key=lambda x: x["miss_distance_km"])
+    logger.debug(f"Generated {len(results)} CDMs from {total_kdtree_matches} coarse KDTree hits.")
     return results
 
 
@@ -297,7 +284,7 @@ def check_conjunctions(bodies: list[dict[str, Any]]) -> list[dict]:
 
         # Refine TCA for future conjunctions
         tca_s, miss_km = time_of_closest_approach(
-            sat_state, deb_state, t0=0.0, max_seconds=3600.0
+            sat_state, deb_state, t_bound_min=0.0, t_bound_max=3600.0
         )
 
         if miss_km > FINE_KM:

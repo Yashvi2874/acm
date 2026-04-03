@@ -121,7 +121,7 @@ def generate_satellites(count=50):
     return satellites
 
 
-def generate_debris(count=10000):
+def generate_debris(count=1000):
     """Generate debris in INDEPENDENT orbits across diverse altitudes."""
     debris = []
     
@@ -191,7 +191,7 @@ def main():
     parser = argparse.ArgumentParser(description="Seed satellites and debris into the telemetry API")
     parser.add_argument("--api", default=os.getenv("API_URL", "http://localhost:8000"))
     parser.add_argument("--satellites", type=int, default=int(os.getenv("SATELLITE_COUNT", "50")))
-    parser.add_argument("--debris", type=int, default=int(os.getenv("DEBRIS_COUNT", "10000")))
+    parser.add_argument("--debris", type=int, default=int(os.getenv("DEBRIS_COUNT", "1000")))
     parser.add_argument("--batch", type=int, default=int(os.getenv("BATCH_SIZE", "200")))
     args = parser.parse_args()
 
