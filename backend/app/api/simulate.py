@@ -239,6 +239,14 @@ async def simulate_step(req: StepRequest):
                     "fuel_remaining_kg": sat.fuel_kg,
                 })
 
+                # Write updated velocity to Atlas immediately after burn
+                from atlas_sync import upsert_satellite_velocity
+                asyncio.create_task(asyncio.get_event_loop().run_in_executor(
+                    None, upsert_satellite_velocity,
+                    burn.satellite_id, sat.position, sat.velocity,
+                    sat.fuel_kg, sat.mass_kg,
+                ))
+
             # ── 2. Propagate satellites ───────────────────────────────────
             for sat in simulation_state.satellites.values():
                 if INTEGRATOR_METHOD == "rk2":

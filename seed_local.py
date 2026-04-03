@@ -80,3 +80,23 @@ with urllib.request.urlopen(req, timeout=15) as resp:
 print(f"Seeded: {result}")
 print(f"50 satellites + 50 debris ready.")
 print(f"Open http://localhost:5173 and refresh.")
+
+# Also write directly to Atlas
+import sys
+try:
+    from pymongo import MongoClient, UpdateOne
+    ATLAS_URI = "mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM&tls=true&tlsInsecure=true"
+    client = MongoClient(ATLAS_URI, serverSelectionTimeoutMS=8000)
+    client.admin.command("ping")
+    db = client["cubesat"]
+    ts = "2026-04-03T00:00:00Z"
+    sat_ops = [UpdateOne({"_id": o["id"]}, {"$set": {**o, "_id": o["id"], "updated_at": ts}}, upsert=True)
+               for o in objects if o["object_type"] == "satellite"]
+    deb_ops = [UpdateOne({"_id": o["id"]}, {"$set": {**o, "_id": o["id"], "updated_at": ts}}, upsert=True)
+               for o in objects if o["object_type"] == "debris"]
+    if sat_ops: db["satellites"].bulk_write(sat_ops, ordered=False)
+    if deb_ops: db["debris"].bulk_write(deb_ops, ordered=False)
+    print(f"Atlas: wrote {len(sat_ops)} satellites + {len(deb_ops)} debris to cubesat DB")
+    client.close()
+except Exception as e:
+    print(f"Atlas write skipped: {e}")

@@ -1,23 +1,54 @@
 import { useState, useEffect } from 'react';
-import type { Satellite } from '../types';
+import type { DebrisPoint, Satellite } from '../types';
 
-interface Props { 
+const API = import.meta.env.VITE_API_URL ?? '';
+
+interface Props {
   satellites: Satellite[];
+  debris: DebrisPoint[];
   showDashboard?: boolean;
   onToggleDashboard?: () => void;
 }
 
-export default function TopBar({ satellites, showDashboard = false, onToggleDashboard }: Props) {
+interface HealthPayload {
+  satellites: number;
+  debris: number;
+  mongodb_satellites?: number;
+  mongodb_debris?: number;
+}
+
+export default function TopBar({ satellites, debris, showDashboard = false, onToggleDashboard }: Props) {
   const [time, setTime] = useState(new Date());
+  const [health, setHealth] = useState<HealthPayload | null>(null);
+
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API}/health`);
+        if (r.ok) setHealth((await r.json()) as HealthPayload);
+      } catch {
+        /* offline */
+      }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
   }, []);
 
   const critical = satellites.filter(s => s.status === 'critical').length;
   const warning = satellites.filter(s => s.status === 'warning').length;
   const systemStatus = critical > 0 ? 'CRITICAL' : warning > 0 ? 'DEGRADED' : 'NOMINAL';
   const statusColor = critical > 0 ? 'var(--red)' : warning > 0 ? 'var(--amber)' : 'var(--green)';
+
+  const debrisUi = debris.length;
+  const debrisDb = health?.mongodb_debris;
+  const debrisMatch = debrisDb === undefined || debrisUi === debrisDb;
+  const satsMatch = health?.mongodb_satellites === undefined || satellites.length === health.mongodb_satellites;
 
   return (
     <div style={{
@@ -50,8 +81,14 @@ export default function TopBar({ satellites, showDashboard = false, onToggleDash
 
       <div style={{ width: 1, height: 28, background: 'var(--border)' }} />
 
-      {/* Stats */}
-      <StatPill label="ACTIVE" value={satellites.length} color="var(--cyan)" />
+      {/* Stats — satellite/debris counts match MongoDB when backend reports mongodb_* */}
+      <StatPill label="SATS" value={satellites.length} color={satsMatch ? 'var(--cyan)' : 'var(--red)'} />
+      <StatPill label="DEBRIS" value={debrisUi} color={debrisMatch ? '#a855f7' : 'var(--red)'} />
+      {health?.mongodb_debris !== undefined && (
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: debrisMatch ? 'var(--green)' : 'var(--red)', letterSpacing: 0.5 }}>
+          DB {health.mongodb_debris} {debrisMatch ? '✓' : '≠ UI'}
+        </span>
+      )}
       <StatPill label="WARN" value={warning} color="var(--amber)" />
       <StatPill label="CRIT" value={critical} color="var(--red)" />
 

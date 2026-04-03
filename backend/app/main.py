@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,8 @@ import httpx
 from api import telemetry, maneuver, simulate, visualization
 from background_propagator import initialize_propagator, shutdown_propagator
 from state_store import simulation_state
+from atlas_sync import start_sync_loop
+from seed_state import load_objects, apply_objects, save_state, mongodb_collection_counts
 
 # Enable logging
 logging.basicConfig(
@@ -123,18 +126,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(telemetry.router,      prefix="/api/telemetry",           tags=["telemetry"])
-app.include_router(maneuver.router,       prefix="/api/maneuver",            tags=["maneuver"])
-app.include_router(simulate.router,       prefix="/api/simulate",            tags=["simulate"])
-app.include_router(visualization.router,  prefix="/api/visualization",       tags=["visualization"])
+app.include_router(telemetry.router,      prefix="/api/telemetry",      tags=["telemetry"])
+app.include_router(maneuver.router,       prefix="/api/maneuver",       tags=["maneuver"])
+app.include_router(simulate.router,       prefix="/api/simulate",       tags=["simulate"])
+app.include_router(visualization.router,  prefix="/api/visualization",  tags=["visualization"])
+
+
+@app.on_event("startup")
+async def _startup():
+    # Auto-seed from saved state or generate defaults
+    objects = load_objects()
+    async with simulation_state.lock:
+        apply_objects(simulation_state, objects)
+    logger.info("Simulation seeded: %d satellites, %d debris",
+                len(simulation_state.satellites), len(simulation_state.debris))
+
+    # Periodic save every 30 seconds
+    async def _save_loop():
+        while True:
+            await asyncio.sleep(30)
+            async with simulation_state.lock:
+                save_state(simulation_state)
+
+    asyncio.create_task(_save_loop())
+
+    # Atlas background sync every 60 seconds (no-op if Atlas unreachable)
+    asyncio.create_task(start_sync_loop(simulation_state, interval_seconds=60))
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    async with simulation_state.lock:
+        save_state(simulation_state)
+    logger.info("State saved on shutdown.")
 
 
 @app.get("/health", tags=["health"])
 async def health():
-    return {
+    """
+    `satellites` / `debris` = in-memory simulation (what the UI snapshot uses).
+    `mongodb_*` = document counts in Atlas (same collections as seed_state.load_objects), when reachable.
+    """
+    out = {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "satellites": len(simulation_state.satellites),
+        "debris": len(simulation_state.debris),
     }
+    mc = mongodb_collection_counts()
+    if mc is not None:
+        out["mongodb_satellites"] = mc["satellites"]
+        out["mongodb_debris"] = mc["debris"]
+    return out
 
 
 # ── Status endpoint ──────────────────────────────────────────────────────────

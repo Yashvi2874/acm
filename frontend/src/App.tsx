@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import TopBar from './components/TopBar';
 import SatelliteList from './components/SatelliteList';
 import GlobeScene from './components/GlobeScene';
@@ -319,7 +319,7 @@ export default function App() {
         }
       `}</style>
 
-      <TopBar satellites={satellites} />
+      <TopBar satellites={satellites} debris={debris} />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Left panel - responsive with proper scrolling */}
