@@ -26,6 +26,8 @@ class SatelliteState:
     # ECI state — km, km/s
     position: list[float] = field(default_factory=lambda: [6778.137, 0.0, 0.0])
     velocity: list[float] = field(default_factory=lambda: [0.0, 7.668, 0.0])
+    db_velocity: list[float] = field(default_factory=lambda: [0.0, 7.668, 0.0])
+    velocity_dirty: bool = False
     mass_kg: float = 4.0
     fuel_kg: float = 0.5
     initial_fuel_kg: float = 0.5   # for EOL % calculation
@@ -77,6 +79,7 @@ class DebrisState:
     debris_id: str
     position: list[float]   # ECI km
     velocity: list[float]   # ECI km/s
+    db_velocity: list[float] = field(default_factory=list)
     # Optional metadata
     radar_cross_section_m2: float = 0.01
     last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -131,6 +134,7 @@ class SimulationState:
 
         # Sorted by burn_time via bisect.insort
         self.maneuver_queue: list[ScheduledBurn] = []
+        self.maneuver_history: list[dict] = []
 
         # UTC datetime clock — starts at epoch of first telemetry or now
         self.sim_time: datetime = datetime.now(timezone.utc)
@@ -173,6 +177,7 @@ class SimulationState:
                 debris_id=debris_id,
                 position=list(position),
                 velocity=list(velocity),
+                db_velocity=list(velocity),
             )
             self.trajectory_log[debris_id] = []
         return self.debris[debris_id]

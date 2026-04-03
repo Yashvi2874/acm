@@ -51,12 +51,35 @@ async def _persist_snapshot(
     collisions: list[dict],
 ) -> None:
     base = GO_ADAPTER_URL
-    # Bulk telemetry snapshot
+    formatted_objects = []
+    for sid, s in sat_snapshot.items():
+        pos = s["position"]
+        vel = s["velocity"]
+        formatted_objects.append({
+            "id": sid,
+            "type": "SATELLITE",
+            "r": {"x": pos[0], "y": pos[1], "z": pos[2]},
+            "v": {"x": vel[0], "y": vel[1], "z": vel[2]},
+            "mass_kg": s.get("mass_kg"),
+            "fuel_kg": s.get("fuel_kg"),
+            "status": s.get("status"),
+        })
+
+    # Include debris
+    from state_store import simulation_state
+    for did, deb in simulation_state.debris.items():
+        pos = deb.position
+        vel = deb.velocity
+        formatted_objects.append({
+            "id": did,
+            "type": "DEBRIS",
+            "r": {"x": pos[0], "y": pos[1], "z": pos[2]},
+            "v": {"x": vel[0], "y": vel[1], "z": vel[2]},
+        })
+
     asyncio.create_task(_post(f"{base}/log/telemetry", {
         "timestamp": sim_time,
-        "objects": [
-            {"id": sid, **s} for sid, s in sat_snapshot.items()
-        ],
+        "objects": formatted_objects,
     }))
     # Individual maneuver logs
     for m in maneuvers:
@@ -163,6 +186,8 @@ async def simulate_step(req: StepRequest):
                         sat = simulation_state.get_or_create_satellite(sat_data["id"])
                         sat.position = [sat_data["r"]["x"], sat_data["r"]["y"], sat_data["r"]["z"]]
                         sat.velocity = [sat_data["v"]["x"], sat_data["v"]["y"], sat_data["v"]["z"]]
+                        sat.db_velocity = list(sat.velocity)
+                        sat.velocity_dirty = False
                         if "fuel_kg" in sat_data:
                             sat.fuel_kg = sat_data["fuel_kg"]
                         if "status" in sat_data:
@@ -174,6 +199,7 @@ async def simulate_step(req: StepRequest):
                             [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]])
                         deb.position = [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]]
                         deb.velocity = [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]]
+                        deb.db_velocity = list(deb.velocity)
                         deb.last_updated = datetime.fromisoformat(deb_data.get("updated_at", simulation_state.sim_time.isoformat())).replace(tzinfo=timezone.utc)
             except Exception as e:
                 # Log but continue
@@ -227,25 +253,29 @@ async def simulate_step(req: StepRequest):
                 sat.fuel_kg       = max(0.0, sat.fuel_kg - burned)
                 sat.mass_kg       = max(sat.mass_kg - burned, sat.mass_kg * 0.5)
                 sat.velocity      = (vel + dv_eci).tolist()
+                sat.db_velocity   = list(sat.velocity)
+                sat.velocity_dirty = True
                 sat.status        = "maneuver"
                 sat.last_burn_time = t_now
                 burn.executed     = True
 
-                maneuvers_executed.append({
+                burn_record = {
                     "burn_id":          burn.burn_id,
                     "satellite_id":     burn.satellite_id,
+                    "type":             "recovery" if "recovery" in burn.burn_id.lower() else "avoidance",
                     "delta_v_kms":      dv_mag,
                     "fuel_burned_kg":   burned,
                     "fuel_remaining_kg": sat.fuel_kg,
-                })
-
-                # Write updated velocity to Atlas immediately after burn
-                from atlas_sync import upsert_satellite_velocity
-                asyncio.create_task(asyncio.get_event_loop().run_in_executor(
-                    None, upsert_satellite_velocity,
-                    burn.satellite_id, sat.position, sat.velocity,
-                    sat.fuel_kg, sat.mass_kg,
-                ))
+                    "timestamp":        t_now.isoformat(),
+                    "x_km":             sat.position[0],
+                    "y_km":             sat.position[1],
+                    "z_km":             sat.position[2],
+                    "vx_kms":           sat.velocity[0],
+                    "vy_kms":           sat.velocity[1],
+                    "vz_kms":           sat.velocity[2],
+                }
+                maneuvers_executed.append(burn_record)
+                simulation_state.maneuver_history.append(burn_record)
 
             # ── 2. Propagate satellites ───────────────────────────────────
             for sat in simulation_state.satellites.values():
@@ -307,9 +337,19 @@ async def simulate_step(req: StepRequest):
         eol_flags: list[dict] = []
         for sid, sat in simulation_state.satellites.items():
             eol = check_eol(sid, sat.fuel_kg, sat.position, sat.velocity)
-            if eol:
+            if eol and sat.status != "decommissioned":
                 sat.status = "decommissioned"
                 eol_flags.append(eol)
+                
+                # Auto-Deorbit / Graveyard burn
+                from state_store import ScheduledBurn
+                graveyard_burn = ScheduledBurn(
+                    burn_id=f"eol_graveyard_{sid}",
+                    satellite_id=sid,
+                    delta_v_rtn=[0.0, -0.015, 0.0],  # maximum allowed retrograde thrust to de-orbit
+                    burn_time=simulation_state.sim_time + timedelta(seconds=1),
+                )
+                simulation_state.enqueue_burn(graveyard_burn)
 
         # ── 7. Conjunction assessment ─────────────────────────────────────
         all_bodies = (
@@ -327,6 +367,36 @@ async def simulate_step(req: StepRequest):
                 miss_distance_km=c["miss_distance_km"],
                 issued_at=simulation_state.sim_time,
             ))
+            
+            # Autonomous Collision Avoidance (COLA)
+            if c["miss_distance_km"] < 0.100:
+                sat = simulation_state.satellites.get(c["sat1"])
+                deb = simulation_state.debris.get(c["sat2"])
+                if sat and deb and sat.status != "maneuver":
+                    # Communications Check: Has LOS to any Ground Station right now?
+                    from physics.ground_station import visible_stations_eci
+                    has_los = len(visible_stations_eci(sat.position, simulation_state.sim_time)) > 0
+                    
+                    if has_los:
+                        # Schedule evasion burn predictively before we lose LOS!
+                        # Execute 60 seconds before TCA to allow time, or 10 seconds from now (signal latency) if TCA is imminent.
+                        buffer_secs = max(10.0, c["tca_seconds"] - 60.0)
+                        
+                        from physics.maneuver import plan_evasion_burn, fuel_consumed
+                        plan = plan_evasion_burn(sat.position, sat.velocity, deb.position, deb.velocity, c["tca_seconds"])
+                        dv_kms = plan["delta_v_magnitude_kms"]
+                        required_fuel = fuel_consumed(sat.mass_kg, dv_kms)
+                        
+                        if required_fuel <= sat.fuel_kg:
+                            from state_store import ScheduledBurn
+                            evasion_burn = ScheduledBurn(
+                                satellite_id=sat.satellite_id,
+                                delta_v_rtn=plan["delta_v_rtn"],
+                                burn_time=simulation_state.sim_time + timedelta(seconds=buffer_secs),
+                            )
+                            simulation_state.enqueue_burn(evasion_burn)
+                            
+                            sat.status = "maneuver"  # Flag it so we don't spam duplicate schedules
 
         # Build response snapshot
         sat_snapshot = {
@@ -536,6 +606,8 @@ async def get_snapshot():
                 "fuel":             fuel_pct,
                 "pos":              sat.position,
                 "vel":              sat.velocity,
+                "nomPos":           sat.nominal_slot.get("position", sat.position),
+                "nomVel":           sat.nominal_slot.get("velocity", sat.velocity),
                 "orbitRadius":      round(r, 3),
                 "orbitInclination": round(inc, 6),
                 "orbitPhase":       round(phase, 6),
@@ -634,5 +706,4 @@ async def init_simulation(req: InitRequest):
     return {"ok": True, "satellites": len(simulation_state.satellites),
             "debris": len(simulation_state.debris),
             "initialized": len(req.objects)}
-
 

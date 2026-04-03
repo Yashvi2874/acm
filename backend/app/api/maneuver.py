@@ -5,20 +5,17 @@ Validates delta-v (km/s RTN), checks fuel budget, inserts a ScheduledBurn
 into the maneuver_queue sorted by burn_time (UTC datetime).
 """
 import math
-import os
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
 from state_store import simulation_state, ScheduledBurn
 from physics.maneuver import fuel_consumed
-from physics.ground_station import visible_stations
+from physics.ground_station import visible_stations_eci
 
 router = APIRouter()
 
 MAX_DV_KMS = 0.5    # km/s — 500 m/s sanity cap
-# Set ACM_ENFORCE_LOS=true to require ground visibility before scheduling (human-in-the-loop).
-_ENFORCE_LOS = os.getenv("ACM_ENFORCE_LOS", "").lower() in ("1", "true", "yes")
 
 
 class DeltaVVector(BaseModel):
@@ -40,19 +37,22 @@ async def schedule_maneuver(req: ManeuverRequest):
     async with simulation_state.lock:
         sat = simulation_state.get_or_create_satellite(req.satelliteId)
         
-        visible = visible_stations(sat.position)
+        # LOS Validation
+        visible = visible_stations_eci(sat.position, simulation_state.sim_time)
         has_los = len(visible) > 0
-        projected_mass = sat.mass_kg
+        
+        if not has_los:
+             # Reject standard commands during a blackout zone
+             return {
+                 "status": "REJECTED_LOS",
+                 "validation": {
+                     "ground_station_los": False,
+                     "sufficient_fuel": True,
+                     "projected_mass_remaining_kg": sat.mass_kg
+                 }
+             }
 
-        if _ENFORCE_LOS and not has_los:
-            return {
-                "status": "REJECTED_LOS",
-                "validation": {
-                    "ground_station_los": False,
-                    "sufficient_fuel": True,
-                    "projected_mass_remaining_kg": round(projected_mass, 2)
-                }
-            }
+        projected_mass = sat.mass_kg
 
         for item in req.maneuver_sequence:
             dv = item.deltaV_vector
@@ -77,7 +77,15 @@ async def schedule_maneuver(req: ManeuverRequest):
             
             projected_mass -= required_fuel
             
-            burn_time = item.burnTime or datetime.now(timezone.utc)
+            # Enforce 10-second signal latency
+            min_burn_time = simulation_state.sim_time + timedelta(seconds=10)
+            burn_time = item.burnTime or min_burn_time
+            if burn_time.tzinfo is None:
+                burn_time = burn_time.replace(tzinfo=timezone.utc)
+                
+            if burn_time < min_burn_time:
+                burn_time = min_burn_time
+            
             burn = ScheduledBurn(
                 burn_id=item.burn_id,
                 satellite_id=req.satelliteId,
@@ -89,7 +97,7 @@ async def schedule_maneuver(req: ManeuverRequest):
     return {
         "status": "SCHEDULED",
         "validation": {
-            "ground_station_los": True,
+            "ground_station_los": has_los,
             "sufficient_fuel": True,
             "projected_mass_remaining_kg": round(projected_mass, 2)
         }
@@ -110,6 +118,13 @@ async def list_pending():
                 for b in simulation_state.maneuver_queue
             ]
         }
+
+@router.get("/history", summary="Get history of all executed maneuvers")
+async def get_history():
+    async with simulation_state.lock:
+        # Sort descending by timestamp (newest first)
+        history = list(reversed(simulation_state.maneuver_history))
+        return {"history": history}
 
 
 @router.delete("/{burn_id}", summary="Cancel a scheduled burn")

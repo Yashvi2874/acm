@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from state_store import simulation_state
 from physics.constants import STATION_KEEP_KM
-from physics.ground_station import load_ground_stations, visible_stations
+from physics.ground_station import load_ground_stations, visible_stations_eci
 
 router = APIRouter()
 
@@ -71,17 +71,6 @@ def _display_status(sat) -> str:
 
 @router.get("/snapshot", summary="Full visualization snapshot")
 async def get_snapshot():
-    """
-    Returns the current simulation state snapshot for frontend visualization.
-    This includes:
-    - All satellite positions, velocities, and orbital elements
-    - All debris positions and velocities
-    - Active CDM warnings
-    - Ground stations
-    
-    Data is read from the in-memory simulation_state which is continuously
-    updated by the background propagator every 60 seconds.
-    """
     async with simulation_state.lock:
         t = simulation_state.sim_time
         gmst = _gmst(t)
@@ -96,7 +85,7 @@ async def get_snapshot():
                 for log_t, log_eci in simulation_state.trajectory_log.get(sid, [])[-540:]
                 for glat, glon, _ in [_eci_to_lla(log_eci[:3], _gmst(log_t))]
             ]
-            vis = visible_stations(sat.position, stations)
+            vis = visible_stations_eci(sat.position, t, stations)
 
             sat_out[sid] = {
                 "position": {"lat": lat, "lon": lon, "alt_km": alt},
@@ -133,7 +122,7 @@ async def get_snapshot():
             for w in simulation_state.active_cdm_warnings
         ]
 
-        # Following the hackathon payload requirement for compact visualization snapshot
+        # Following the frontend payload requirement for compact visualization snapshot
         # with flattened debris cloud tuples.
         satellites_compact = [
             {
@@ -169,77 +158,6 @@ async def get_snapshot():
         }
 
 
-@router.get("/objects", summary="Get all satellites and debris from database")
-async def get_all_objects():
-    """
-    Fetch all satellites and debris from the database via Go adapter.
-    This endpoint reads the authoritative database state.
-    """
-    try:
-        import httpx
-        import os
-        
-        go_adapter_url = os.getenv("GO_ADAPTER_URL", "http://go-adapter:8080")
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{go_adapter_url}/objects", timeout=5.0)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Sync database state into simulation_state
-            async with simulation_state.lock:
-                # Update satellites
-                for sat_data in data.get("satellites", []):
-                    sat = simulation_state.get_or_create_satellite(sat_data["id"])
-                    sat.position = [sat_data["r"]["x"], sat_data["r"]["y"], sat_data["r"]["z"]]
-                    sat.velocity = [sat_data["v"]["x"], sat_data["v"]["y"], sat_data["v"]["z"]]
-                    if "fuel_kg" in sat_data:
-                        sat.fuel_kg = sat_data["fuel_kg"]
-                    if "status" in sat_data:
-                        sat.status = sat_data["status"]
-                    if "mass_kg" in sat_data:
-                        sat.mass_kg = sat_data["mass_kg"]
-                
-                # Update debris
-                for deb_data in data.get("debris", []):
-                    deb = simulation_state.get_or_create_debris(
-                        deb_data["id"],
-                        [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]],
-                        [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]]
-                    )
-            
-            return data
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to fetch objects from database: {e}")
-        
-        # Return current in-memory state as fallback
-        async with simulation_state.lock:
-            satellites = [
-                {
-                    "id": sat.satellite_id,
-                    "r": {"x": sat.position[0], "y": sat.position[1], "z": sat.position[2]},
-                    "v": {"x": sat.velocity[0], "y": sat.velocity[1], "z": sat.velocity[2]},
-                    "fuel_kg": sat.fuel_kg,
-                    "status": sat.status,
-                    "mass_kg": sat.mass_kg,
-                }
-                for sat in simulation_state.satellites.values()
-            ]
-            
-            debris = [
-                {
-                    "id": deb.debris_id,
-                    "r": {"x": deb.position[0], "y": deb.position[1], "z": deb.position[2]},
-                    "v": {"x": deb.velocity[0], "y": deb.velocity[1], "z": deb.velocity[2]},
-                }
-                for deb in simulation_state.debris.values()
-            ]
-            
-            return {"satellites": satellites, "debris": debris}
-
-
 @router.get("/ground-track/{satellite_id}")
 async def ground_track(satellite_id: str):
     async with simulation_state.lock:
@@ -270,3 +188,4 @@ async def list_cdm():
                 for w in simulation_state.cdm_warnings
             ]
         }
+

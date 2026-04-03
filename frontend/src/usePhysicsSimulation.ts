@@ -1,20 +1,8 @@
-/**
- * usePhysicsSimulation
- *
- * Connects the React UI to either:
- *   1. demo/live object data from the Go adapter via Mongo, or
- *   2. the FastAPI physics backend.
- *
- * Falls back to mock animation if neither source is reachable.
- */
 import { useEffect, useRef, useCallback } from 'react';
 import type { Satellite, DebrisPoint } from './types';
 
 const API = import.meta.env.VITE_API_URL ?? '';
-// Poll every 2 seconds to fetch updated satellite/debris positions from database
-// The backend propagates positions every 60 seconds using RK4+J2
-// Frontend fetches every 2 seconds to display smooth motion
-const POLL_MS = 2000;  // 2 seconds for smooth visualization
+const POLL_MS = 5000;  // 5 seconds
 
 const SIM_DT  = 10.0;
 const MU      = 398600.4418;
@@ -50,6 +38,7 @@ interface AtlasObject {
   status?: string;
   fuel_kg?: number;
   mass_kg?: number;
+  updated_at?: string;
 }
 
 interface InitObject {
@@ -87,8 +76,9 @@ function frontendStatus(status?: string): Satellite['status'] {
     case 'decommissioned':
     case 'eol':
       return 'critical';
-    case 'warning':
     case 'maneuver':
+      return 'maneuver';
+    case 'warning':
     case 'safe-hold':
     case 'comms-loss':
       return 'warning';
@@ -99,6 +89,11 @@ function frontendStatus(status?: string): Satellite['status'] {
 
 function atlasObjectsToSnapshot(data: { satellites: AtlasObject[]; debris: AtlasObject[] }): SimSnapshot {
   const nearbyDebris = new Map<string, string>();
+  const latestUpdatedAt = [...data.satellites, ...data.debris]
+    .map((obj) => obj.updated_at)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1);
 
   const satellites = data.satellites.map((sat, index) => {
     const orbitRadius = norm3(sat.r.x, sat.r.y, sat.r.z);
@@ -118,7 +113,6 @@ function atlasObjectsToSnapshot(data: { satellites: AtlasObject[]; debris: Atlas
       name: `Orbital-${index + 1}`,
       status: frontendStatus(sat.status),
       fuel: Math.max(0, Math.min(100, Math.round((sat.fuel_kg ?? 0.4) * 200))),
-      mass_kg: sat.mass_kg || 5.0,
       pos: [sat.r.x, sat.r.y, sat.r.z] as [number, number, number],
       vel: [sat.v.x, sat.v.y, sat.v.z] as [number, number, number],
       orbitRadius,
@@ -151,7 +145,7 @@ function atlasObjectsToSnapshot(data: { satellites: AtlasObject[]; debris: Atlas
     satellites,
     debris,
     cdm_warnings: [],
-    sim_time: new Date().toISOString(),
+    sim_time: latestUpdatedAt ?? new Date().toISOString(),
   };
 }
 
@@ -326,24 +320,15 @@ async function stepAndSnapshot(): Promise<SimSnapshot | null> {
           riskTarget: null,
         } as Satellite;
       }),
-      debris: visualization.debris_cloud.map((d) => {
-        const [id, lat, lon, alt, px, py, pz, vx, vy, vz] = d;
-        const r = Math.sqrt(px * px + py * py + pz * pz);
-        const speedKms = Math.sqrt(vx * vx + vy * vy + vz * vz);
-        return {
-          id,
-          x: px,
-          y: py,
-          z: pz,
-          vx,
-          vy,
-          vz,
-          r,
-          phase: Math.atan2(py, px),
-          speed: r > 0 ? speedKms / r : 0,
-          inclination: r > 0 ? Math.acos(Math.max(-1, Math.min(1, pz / r))) : 0,
-        };
-      }),
+      debris: visualization.debris_cloud.map((d) => ({
+        id: d[0],
+        x: d[4],
+        y: d[5],
+        z: d[6],
+        vx: d[7],
+        vy: d[8],
+        vz: d[9],
+      })),
 
       cdm_warnings: visualization.cdm_warnings,
       sim_time: visualization.timestamp,
@@ -398,7 +383,6 @@ export function usePhysicsSimulation({
         return;
       }
 
-      // Fetch immediately on first load
       const initialSnap = mode === 'atlas'
         ? await fetchAtlasSnapshot()
         : await stepAndSnapshot();
@@ -416,7 +400,6 @@ export function usePhysicsSimulation({
         onUpdate(sats, initialSnap.debris, initialSnap.cdm_warnings, initialSnap.sim_time);
       }
 
-      // Poll every 15 minutes for new data from database
       timerRef.current = setInterval(async () => {
         const snap = mode === 'atlas'
           ? await fetchAtlasSnapshot()
@@ -429,7 +412,6 @@ export function usePhysicsSimulation({
           return;
         }
 
-        // Only update if data actually changed
         if (snap !== lastSnapshotRef.current) {
           lastSnapshotRef.current = snap;
           const sats = snap.satellites.map((s) => ({

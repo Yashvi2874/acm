@@ -1,12 +1,13 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import TopBar from './components/TopBar';
 import SatelliteList from './components/SatelliteList';
 import GlobeScene from './components/GlobeScene';
 import DetailPanel from './components/DetailPanel';
-import ManeuverTimeline from './components/ManeuverTimeline';import Tooltip from './components/Tooltip';
+import ManeuverTimeline from './components/ManeuverTimeline';
+import Tooltip from './components/Tooltip';
 import ManeuverModal from './components/ManeuverModal';
 import { usePhysicsSimulation } from './usePhysicsSimulation';
-import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan } from './types';
+import type { Satellite, DebrisPoint, GroundStation, Maneuver, ManeuverPlan, ManeuverHistoryLog } from './types';
 
 const INITIAL_SATS: Satellite[] = [];
 const INITIAL_DEBRIS: DebrisPoint[] = [];
@@ -33,6 +34,7 @@ export default function App() {
   const [flaringId, setFlaringId] = useState<string | null>(null);
   const [useMock] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [maneuverHistory, setManeuverHistory] = useState<ManeuverHistoryLog[]>([]);
   const autoManeuveredRef = useRef<Set<string>>(new Set()); // prevent re-triggering
   
   const hoveredIdRef = useRef<string | null>(null);
@@ -54,23 +56,32 @@ export default function App() {
     },
   });
 
-  // Auto-refresh data from database every 2 seconds for smooth visualization
-  // The backend propagates positions every 60 seconds using RK4+J2
-  // Frontend fetches every 2 seconds to display smooth motion
+  // Auto-refresh data from database every 60 seconds
   useEffect(() => {
     const refreshData = async () => {
       try {
-        const response = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/visualization/snapshot`);
-        if (response.ok) {
-          const data = await response.json();
-          if (data.satellites && data.debris_cloud) {
-            console.log(`✓ Fetched updated data: ${data.satellites.length} satellites, ${data.debris_cloud.length} debris`);
+        const apiBase = `${import.meta.env.VITE_API_URL ?? ''}`;
+        const [objectsResponse, pendingResponse, historyResponse] = await Promise.all([
+          fetch(`${apiBase}/api/telemetry/objects`),
+          fetch(`${apiBase}/api/maneuver/pending`).catch(() => null),
+          fetch(`${apiBase}/api/maneuver/history`).catch(() => null),
+        ]);
+
+        if (objectsResponse.ok) {
+          const data = await objectsResponse.json();
+          if (data.satellites && data.debris) {
+            console.log(`Auto-refreshing data: ${data.satellites.length} satellites, ${data.debris.length} debris`);
+            const latestUpdatedAt = [...data.satellites, ...data.debris]
+              .map((obj: any) => obj.updated_at)
+              .filter(Boolean)
+              .sort()
+              .at(-1);
             
             // Transform backend format to frontend Satellite interface
             const MU = 398600.4418;
             const transformedSats = data.satellites.map((sat: any) => {
-              const pos = sat.eci_km as [number, number, number];
-              const vel = sat.eci_vel_kms as [number, number, number];
+              const pos = sat.r ? [sat.r.x, sat.r.y, sat.r.z] as [number, number, number] : [0, 0, 0];
+              const vel = sat.v ? [sat.v.x, sat.v.y, sat.v.z] as [number, number, number] : [0, 0, 0];
               const r = Math.sqrt(pos[0]**2 + pos[1]**2 + pos[2]**2);
               // Inclination from angular momentum vector h = r × v
               const hx = pos[1]*vel[2] - pos[2]*vel[1];
@@ -79,62 +90,89 @@ export default function App() {
               const h = Math.sqrt(hx*hx + hy*hy + hz*hz);
               const inc = h > 0 ? Math.acos(Math.max(-1, Math.min(1, hz / h))) : 0;
               const phase = Math.atan2(pos[1], pos[0]);
-              // Angular speed from velocity magnitude
-              const speedKms = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
-              const angularSpeed = r > 0 ? speedKms / r : Math.sqrt(MU / (r * r * r));
-              
+              // Angular speed from circular orbit approximation
+              const speed = Math.sqrt(MU / (r * r * r)) * 0.016 * 40;
               return {
-                id: sat.id,
-                name: sat.id,
-                status: sat.status === 'NOMINAL' ? 'nominal' : sat.status === 'OUTAGE' ? 'critical' : 'warning' as 'nominal'|'warning'|'critical',
-                fuel: Math.max(0, Math.min(100, Math.round(sat.fuel_kg * 2))),
+                id: sat.id || `SAT-${Math.random().toString(36).substr(2, 9)}`,
+                name: sat.name || sat.id || 'Unknown',
+                status: (['nominal','warning','critical'].includes(sat.status) ? sat.status : 'nominal') as 'nominal'|'warning'|'critical',
+                fuel: sat.fuel_kg !== undefined ? Math.round(sat.fuel_kg * 200) : 100,
                 pos, vel,
                 orbitRadius: r,
                 orbitInclination: inc,
                 orbitPhase: phase,
-                orbitSpeed: angularSpeed,
+                orbitSpeed: speed,
                 collisionRisk: false,
                 autoManeuvering: false,
               };
             });
             
             // Transform debris format
-            const transformedDebris = data.debris_cloud.map((deb: any) => {
-              const [id, lat, lon, alt, px, py, pz, vx, vy, vz] = deb;
-              const r = Math.sqrt(px*px + py*py + pz*pz);
-              const speedKms = Math.sqrt(vx*vx + vy*vy + vz*vz);
+            const transformedDebris = data.debris.map((deb: any) => {
+              const pos = deb.r ? [deb.r.x, deb.r.y, deb.r.z] as [number, number, number] : [0, 0, 0];
+              const vel = deb.v ? [deb.v.x, deb.v.y, deb.v.z] as [number, number, number] : [0, 0, 0];
               
               return {
-                id,
-                x: px,
-                y: py,
-                z: pz,
-                vx,
-                vy,
-                vz,
-                r,
-                phase: Math.atan2(py, px),
-                speed: r > 0 ? speedKms / r : 0,
-                inclination: r > 0 ? Math.acos(Math.max(-1, Math.min(1, pz / r))) : 0,
+                id: deb.id || `DEB-${Math.random().toString(36).substr(2, 9)}`,
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                vx: vel[0],
+                vy: vel[1],
+                vz: vel[2],
               };
             });
             
             setSatellites(transformedSats);
             setDebris(transformedDebris);
-            setSimTime(data.timestamp);
+            setSimTime(latestUpdatedAt ?? new Date().toISOString());
             setTick(t => t + 1);
           }
         }
+
+        if (pendingResponse && pendingResponse.ok) {
+          const pendingData = await pendingResponse.json();
+          const pendingManeuvers: Maneuver[] = (pendingData.pending ?? []).map((burn: any) => {
+            const burnTime = new Date(burn.burn_time);
+            const hoursUntilBurn = Math.max(0, (burnTime.getTime() - Date.now()) / (1000 * 60 * 60));
+            const deltaVVector = burn.delta_v_rtn_kms ?? [0, 0, 0];
+            const deltaV = Math.sqrt(
+              deltaVVector[0] ** 2 +
+              deltaVVector[1] ** 2 +
+              deltaVVector[2] ** 2
+            );
+
+            return {
+              id: burn.burn_id,
+              satelliteId: burn.satellite_id,
+              type: burn.burn_id?.toLowerCase().includes('recovery') ? 'recovery' : 'avoidance',
+              startHour: Math.min(hoursUntilBurn, 24),
+              durationHours: Math.max(deltaV * 0.4, 1 / 120),
+              deltaV,
+              executed: false,
+            } as Maneuver;
+          });
+
+          setManeuvers(current => {
+            const localExecuted = current.filter(maneuver => maneuver.executed);
+            return [...localExecuted, ...pendingManeuvers];
+          });
+        }
+
+        if (historyResponse && historyResponse.ok) {
+          const historyData = await historyResponse.json();
+          setManeuverHistory(historyData.history ?? []);
+        }
       } catch (error) {
-        console.warn('Data refresh failed:', error);
+        console.warn('Auto-refresh failed:', error);
       }
     };
 
-    // Initial refresh after 1 second
-    const initialTimeout = setTimeout(refreshData, 1000);
+    // Initial refresh after 5 seconds
+    const initialTimeout = setTimeout(refreshData, 5000);
     
-    // Then refresh every 2 seconds to display updated positions
-    refreshIntervalRef.current = setInterval(refreshData, 2000);
+    // Then refresh every 60 seconds
+    refreshIntervalRef.current = setInterval(refreshData, 60000);
 
     return () => {
       if (initialTimeout) clearTimeout(initialTimeout);
@@ -156,6 +194,8 @@ export default function App() {
   const handleConfirmManeuver = useCallback((plan: ManeuverPlan) => {
     const fuelCost = Math.round(plan.deltaV * 20);
     const mnvId = `MNV-${Date.now()}`;
+    const baseTime = Number.isNaN(new Date(simTime).getTime()) ? new Date() : new Date(simTime);
+    const scheduledTime = new Date(baseTime.getTime() + plan.scheduledHour * 60 * 60 * 1000);
 
     // Apply orbit change immediately if scheduled now, else just schedule
     setSatellites(prev => prev.map(sat => {
@@ -206,9 +246,14 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          satellite_id: plan.satelliteId,
-          delta_v_rtn: dvRtn,
-          burn_time: plan.scheduledHour === 0 ? null : undefined,
+          satelliteId: plan.satelliteId,
+          maneuver_sequence: [
+            {
+              burn_id: mnvId,
+              burnTime: scheduledTime.toISOString(),
+              deltaV_vector: { x: dvRtn[0], y: dvRtn[1], z: dvRtn[2] },
+            },
+          ],
         }),
       }).catch(() => { /* fire-and-forget */ });
     }
@@ -221,7 +266,7 @@ export default function App() {
 
     setManeuverModal(false);
     setManeuverPlan(null);
-  }, [useMock]);
+  }, [simTime, useMock]);
 
   const handleOpenModal = useCallback(() => {
     if (!selectedId) return;
@@ -319,7 +364,7 @@ export default function App() {
         }
       `}</style>
 
-      <TopBar satellites={satellites} debris={debris} />
+      <TopBar satellites={satellites} />
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Left panel - responsive with proper scrolling */}
@@ -360,7 +405,7 @@ export default function App() {
               e.currentTarget.style.boxShadow = '0 0 10px rgba(0,212,255,0.2)';
             }}
             >
-              📅 MANEUVER TIMELINE
+              MANEUVER TIMELINE
             </button>
           </div>
         </div>
@@ -438,7 +483,6 @@ export default function App() {
             satellite={selectedSat}
             maneuvers={maneuvers}
             onPlanManeuver={handleOpenModal}
-            onClose={() => setSelectedId(null)}
           />
         </div>
       </div>
@@ -455,6 +499,8 @@ export default function App() {
 
       {showTimeline && (
         <ManeuverTimeline
+          maneuvers={maneuvers}
+          history={maneuverHistory}
           satellites={satellites}
           simTime={simTime}
           onClose={() => setShowTimeline(false)}

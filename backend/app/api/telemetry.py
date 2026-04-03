@@ -79,12 +79,15 @@ async def ingest_telemetry(batch: TelemetryBatch):
                 deb = simulation_state.get_or_create_debris(obj_id, pos, vel)
                 deb.position = pos
                 deb.velocity = vel
+                deb.db_velocity = list(vel)
                 deb.last_updated = ts
             else:
                 # SATELLITE or any other controllable object
                 sat = simulation_state.get_or_create_satellite(obj_id)
                 sat.position = pos
                 sat.velocity = vel
+                sat.db_velocity = list(vel)
+                sat.velocity_dirty = False
                 if obj.mass_kg is not None:
                     sat.mass_kg = obj.mass_kg
                 if obj.fuel_kg is not None:

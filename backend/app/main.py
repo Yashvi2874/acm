@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,8 +7,6 @@ import httpx
 from api import telemetry, maneuver, simulate, visualization
 from background_propagator import initialize_propagator, shutdown_propagator
 from state_store import simulation_state
-from atlas_sync import start_sync_loop
-from seed_state import load_objects, apply_objects, save_state, mongodb_collection_counts
 
 # Enable logging
 logging.basicConfig(
@@ -40,6 +37,8 @@ async def _load_objects_from_db() -> int:
                     sat = simulation_state.get_or_create_satellite(sat_data["id"])
                     sat.position = [sat_data["r"]["x"], sat_data["r"]["y"], sat_data["r"]["z"]]
                     sat.velocity = [sat_data["v"]["x"], sat_data["v"]["y"], sat_data["v"]["z"]]
+                    sat.db_velocity = list(sat.velocity)
+                    sat.velocity_dirty = False
                     if "fuel_kg" in sat_data:
                         sat.fuel_kg = sat_data["fuel_kg"]
                     if "status" in sat_data:
@@ -53,6 +52,7 @@ async def _load_objects_from_db() -> int:
                         [deb_data["r"]["x"], deb_data["r"]["y"], deb_data["r"]["z"]],
                         [deb_data["v"]["x"], deb_data["v"]["y"], deb_data["v"]["z"]]
                     )
+                    deb.db_velocity = list(deb.velocity)
                     count += 1
             
             logger.info(f"Loaded {count} objects from database")
@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
     # Start background propagator
     try:
         await initialize_propagator(go_adapter_url)
-        logger.info("✓ Background propagator started (updates every 10 seconds)")
+        logger.info("✓ Background propagator started (updates every 60 seconds)")
     except Exception as e:
         logger.error(f"Failed to initialize propagator: {e}")
     
@@ -126,58 +126,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(telemetry.router,      prefix="/api/telemetry",      tags=["telemetry"])
-app.include_router(maneuver.router,       prefix="/api/maneuver",       tags=["maneuver"])
-app.include_router(simulate.router,       prefix="/api/simulate",       tags=["simulate"])
-app.include_router(visualization.router,  prefix="/api/visualization",  tags=["visualization"])
-
-
-@app.on_event("startup")
-async def _startup():
-    # Auto-seed from saved state or generate defaults
-    objects = load_objects()
-    async with simulation_state.lock:
-        apply_objects(simulation_state, objects)
-    logger.info("Simulation seeded: %d satellites, %d debris",
-                len(simulation_state.satellites), len(simulation_state.debris))
-
-    # Periodic save every 30 seconds
-    async def _save_loop():
-        while True:
-            await asyncio.sleep(30)
-            async with simulation_state.lock:
-                save_state(simulation_state)
-
-    asyncio.create_task(_save_loop())
-
-    # Atlas background sync every 60 seconds (no-op if Atlas unreachable)
-    asyncio.create_task(start_sync_loop(simulation_state, interval_seconds=60))
-
-
-@app.on_event("shutdown")
-async def _shutdown():
-    async with simulation_state.lock:
-        save_state(simulation_state)
-    logger.info("State saved on shutdown.")
+app.include_router(telemetry.router,      prefix="/api/telemetry",           tags=["telemetry"])
+app.include_router(maneuver.router,       prefix="/api/maneuver",            tags=["maneuver"])
+app.include_router(simulate.router,       prefix="/api/simulate",            tags=["simulate"])
+app.include_router(visualization.router,  prefix="/api/visualization",       tags=["visualization"])
 
 
 @app.get("/health", tags=["health"])
 async def health():
-    """
-    `satellites` / `debris` = in-memory simulation (what the UI snapshot uses).
-    `mongodb_*` = document counts in Atlas (same collections as seed_state.load_objects), when reachable.
-    """
-    out = {
+    return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "satellites": len(simulation_state.satellites),
-        "debris": len(simulation_state.debris),
     }
-    mc = mongodb_collection_counts()
-    if mc is not None:
-        out["mongodb_satellites"] = mc["satellites"]
-        out["mongodb_debris"] = mc["debris"]
-    return out
 
 
 # ── Status endpoint ──────────────────────────────────────────────────────────
@@ -195,5 +155,5 @@ async def system_status():
             "debris_count": len(simulation_state.debris),
             "pending_burns": len(simulation_state.maneuver_queue),
             "active_cdm_warnings": len(simulation_state.active_cdm_warnings),
-            "propagation_interval_seconds": 10,
+            "propagation_interval_seconds": 60,
         }

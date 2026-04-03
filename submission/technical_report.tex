@@ -1,0 +1,55 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{ACM: Autonomous Constellation Manager}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+ACM is a telemetry-driven orbital operations platform for constellation state propagation, conjunction assessment, maneuver scheduling, and real-time visualization.
+
+\section{State Model}
+Each object is represented in the Earth-Centered Inertial frame by
+\[
+S(t) = [x, y, z, v_x, v_y, v_z]^T
+\]
+with position in kilometers and velocity in kilometers per second.
+
+\section{Propagation}
+The propagated dynamics are
+\[
+\ddot{\vec r} = -\frac{\mu}{|\vec r|^3}\vec r + \vec a_{J2}
+\]
+where $\mu = 398600.4418 \ \text{km}^3/\text{s}^2$, $R_E = 6378.137 \ \text{km}$, and $J_2 = 1.08263 \times 10^{-3}$.
+
+Numerical integration is performed with RK4, with bounded substeps for stability and repeatability.
+
+\section{Conjunction Assessment}
+The system uses KD-tree screening to reduce pairwise comparisons, then refines candidate pairs by evaluating closest approach. A critical event is defined by
+\[
+|\vec r_{sat}(t) - \vec r_{deb}(t)| < 0.100 \ \text{km}.
+\]
+
+\section{Maneuver Logic}
+Burns are planned in RTN and rotated to ECI through
+\[
+\Delta \vec v_{ECI} = [\hat R \ \hat T \ \hat N]\Delta \vec v_{RTN}.
+\]
+
+Fuel depletion is modeled with the Tsiolkovsky equation:
+\[
+\Delta m = m_{current}\left(1 - e^{-|\Delta \vec v|/(I_{sp} g_0)}\right).
+\]
+
+\section{Persistence and Visualization}
+Incoming telemetry is treated as the latest authoritative baseline. ACM propagates object coordinates every minute, persists updated positions to the database, and only overwrites satellite velocity in persistent storage after actual maneuvers. The frontend polls these updated states and renders orbiting satellites and debris from the refreshed coordinates.
+
+\section{Submission Note}
+The repository root contains a grading-ready Dockerfile based on \texttt{ubuntu:22.04} that binds the API to \texttt{0.0.0.0:8000}.
+
+\end{document}

@@ -100,7 +100,7 @@ def propagate_rk2(
 
 
 def propagate_rk4(
-    state: list[float] | np.ndarray,
+    state: list[float],
     duration: float,
     dt: float = 10.0,
 ) -> list[list[float]]:
@@ -108,7 +108,7 @@ def propagate_rk4(
     Fixed-step RK4 propagation.
 
     Args:
-        state    : [x, y, z, vx, vy, vz]  km / km/s (list or numpy array)
+        state    : [x, y, z, vx, vy, vz]  km / km/s
         duration : total propagation time  seconds
         dt       : requested output interval (seconds); internally sub-stepped
                    at MAX_SUBSTEP_S for accuracy
@@ -116,12 +116,7 @@ def propagate_rk4(
     Returns:
         List of state vectors at each output interval (including t=0).
     """
-    # Ensure state is a numpy array
-    if isinstance(state, list):
-        s = np.array(state, dtype=np.float64)
-    else:
-        s = np.asarray(state, dtype=np.float64)
-    
+    s = np.array(state, dtype=np.float64)
     trajectory: list[list[float]] = [s.tolist()]
 
     t_elapsed = 0.0

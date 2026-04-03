@@ -24,7 +24,7 @@ from typing import Any
 from physics.propagator import propagate_rk4, propagate_ivp
 
 # ── Hackathon Spec-Exact Thresholds ───────────────────────────────────────────
-COLLISION_THRESHOLD_KM = 0.100  # 100 meters - per hackathon specification
+COLLISION_THRESHOLD_KM = 0.100  # 100 meters - per project specification
 COARSE_KM              = 5.0    # Initial screening radius for KDTree query
 CRITICAL_KM            = COLLISION_THRESHOLD_KM  # Alias for clarity
 FINE_KM                = 5.0    # Refinement threshold
@@ -557,3 +557,4 @@ if __name__ == "__main__":
     for v in result["violations"]:
         print(f"  {v['object_a_id']} x {v['object_b_id']} → "
               f"d_min={v['d_min_km']} km in {v['tau_minutes']} min")
+

@@ -61,6 +61,11 @@ func RegisterTelemetryRoutes(r *gin.Engine, p *service.TelemetryProcessor) {
 		}
 
 		ts := time.Now().UTC()
+		if body.Timestamp != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, body.Timestamp); err == nil {
+				ts = parsed.UTC()
+			}
+		}
 
 		for _, obj := range body.Objects {
 			// Upsert into satellites or debris collection

@@ -2,12 +2,26 @@ version: "3.9"
 
 services:
 
+  mongodb:
+    image: mongo:6
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   go-adapter:
     build: ./go-adapter
     ports:
       - "8080:8080"
+    depends_on:
+      mongodb:
+        condition: service_healthy
     environment:
-      - MONGO_URI=${MONGO_URI:-mongodb+srv://yashasvig_db_user:PASSWORD@cluster0.ltykwqy.mongodb.net/acm_db}
+      - MONGO_URI=mongodb+srv://yashasvig_db_user:ENzdThDvVBAg6VUi@cluster0.ltykwqy.mongodb.net/?appName=ACM&tls=true&tlsInsecure=true
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s

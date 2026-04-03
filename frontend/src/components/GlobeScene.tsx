@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<string, number> = {
   nominal: 0x00d4ff,
   warning: 0xffb800,
   critical: 0xff3b3b,
+  maneuver: 0x00ff88,
 };
 
 const SCALE = 1 / 500;
@@ -45,20 +46,27 @@ function gmstRadians(simTime: string) {
   return ((theta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
 }
 
-// Build a proper circular orbit path in 3D space
+function buildOrbitPointsFromVectors(p0: THREE.Vector3, u: THREE.Vector3): THREE.Vector3[] {
+  const pts: THREE.Vector3[] = [];
+  for (let a = 0; a <= 360; a += 2) {
+    const rad = (a * Math.PI) / 180;
+    const pos = new THREE.Vector3()
+      .addScaledVector(p0, Math.cos(rad))
+      .addScaledVector(u, Math.sin(rad));
+    pts.push(toScene(pos.x, pos.y, pos.z));
+  }
+  return pts;
+}
+
 function buildOrbitPoints(radius: number, inclination: number): THREE.Vector3[] {
   const pts: THREE.Vector3[] = [];
-  const incRad = inclination; // already in radians
-  
-  for (let deg = 0; deg <= 360; deg += 2) {
-    const theta = (deg * Math.PI) / 180;
-    
-    // Circular orbit in orbital plane, then rotate by inclination
-    const x = radius * Math.cos(theta);
-    const y = radius * Math.sin(theta) * Math.cos(incRad);
-    const z = radius * Math.sin(theta) * Math.sin(incRad);
-    
-    pts.push(toScene(x, y, z));
+  for (let a = 0; a <= 360; a += 2) {
+    const rad = (a * Math.PI) / 180;
+    pts.push(toScene(
+      radius * Math.cos(rad) * Math.cos(inclination),
+      radius * Math.sin(rad),
+      radius * Math.cos(rad) * Math.sin(inclination)
+    ));
   }
   return pts;
 }
@@ -141,6 +149,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     satHitMeshes: Map<string, THREE.Mesh>;
     debrisMeshes: THREE.Mesh[];
     orbitLines: Map<string, THREE.Line>;
+    nomOrbitLines: Map<string, THREE.Line>;
     ghostOrbit: THREE.Line | null;
     flareRing: THREE.Mesh;
     flareProgress: number;
@@ -154,6 +163,10 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     isDragging: boolean;
     lastMouse: { x: number; y: number };
     theta: number; phi: number; radius: number;
+    focusTarget: THREE.Vector3;
+    targetRadius: number;
+    isAutoZooming: boolean;
+    hoveredId: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -166,7 +179,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     mount.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(45, W / H, 0.01, 1000);
+    const camera = new THREE.PerspectiveCamera(45, W / H, 0.01, 150000);
     camera.position.set(0, 0, 28);
 
     // Stars
@@ -375,6 +388,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     const satGroups = new Map<string, THREE.Group>();
     const satHitMeshes = new Map<string, THREE.Mesh>();
     const orbitLines = new Map<string, THREE.Line>();
+    const nomOrbitLines = new Map<string, THREE.Line>();
 
     satellites.forEach(sat => {
       const group = buildSatelliteGroup(STATUS_COLORS[sat.status]);
@@ -393,18 +407,33 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       scene.add(hitMesh);
       satHitMeshes.set(sat.id, hitMesh);
 
-      // Create fixed blue orbit path - visible trail showing where satellite travels
+      const p = new THREE.Vector3(...sat.pos);
+      const v = new THREE.Vector3(...sat.vel);
+      let r_mag = p.length();
+      let n = new THREE.Vector3().crossVectors(p, v).normalize();
+      let u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
+      
       const orbitLine = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(buildOrbitPoints(sat.orbitRadius, sat.orbitInclination)),
-        new THREE.LineBasicMaterial({ 
-          color: 0x0088ff,  // Bright blue orbit path
-          transparent: true, 
-          opacity: 0.6,
-          linewidth: 2
-        })
+        new THREE.BufferGeometry().setFromPoints(buildOrbitPointsFromVectors(p, u)),
+        new THREE.LineBasicMaterial({ color: STATUS_COLORS[sat.status], transparent: true, opacity: 0.35 })
       );
       scene.add(orbitLine);
       orbitLines.set(sat.id, orbitLine);
+
+      if (sat.nomPos && sat.nomVel) {
+        const np = new THREE.Vector3(...sat.nomPos);
+        const nv = new THREE.Vector3(...sat.nomVel);
+        const nr_mag = np.length();
+        const nn = new THREE.Vector3().crossVectors(np, nv).normalize();
+        const nu = new THREE.Vector3().crossVectors(nn, np).normalize().multiplyScalar(nr_mag);
+        const nomLine = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(buildOrbitPointsFromVectors(np, nu)),
+          new THREE.LineDashedMaterial({ color: 0x88aaff, transparent: true, opacity: 0.2, dashSize: 0.4, gapSize: 0.2 })
+        );
+        nomLine.computeLineDistances();
+        scene.add(nomLine);
+        nomOrbitLines.set(sat.id, nomLine);
+      }
     });
 
     // Ghost orbit
@@ -435,7 +464,10 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       phi = Math.max(0.1, Math.min(Math.PI - 0.1, phi + (e.clientY - lastMouse.y) * 0.005));
       lastMouse = { x: e.clientX, y: e.clientY };
     };
-    const onWheel = (e: WheelEvent) => { radius = Math.max(14, Math.min(60, radius + e.deltaY * 0.02)); };
+    const onWheel = (e: WheelEvent) => { 
+      radius = Math.max(2, Math.min(60000, radius + e.deltaY * (radius * 0.003))); 
+      if (sceneRef.current) sceneRef.current.isAutoZooming = false; 
+    };
     mount.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('mousemove', onMouseMove);
@@ -462,24 +494,40 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     mount.addEventListener('mousemove', onMouseMoveHover);
 
     let animId = 0;
+    const focusTargetObj = new THREE.Vector3(0, 0, 0);
+
     const animate = () => {
       animId = requestAnimationFrame(animate);
+      const sc = sceneRef.current;
+      
+      const targetPos = new THREE.Vector3(0, 0, 0);
+      if (selectedId && sc) {
+        const group = sc.satGroups.get(selectedId);
+        if (group) targetPos.copy(group.position);
+      }
+      focusTargetObj.lerp(targetPos, 0.05);
+
+      if (sc?.isAutoZooming) {
+        radius += (sc.targetRadius - radius) * 0.05;
+        if (Math.abs(radius - sc.targetRadius) < 0.1) sc.isAutoZooming = false;
+      }
+
       camera.position.set(
-        radius * Math.sin(phi) * Math.sin(theta),
-        radius * Math.cos(phi),
-        radius * Math.sin(phi) * Math.cos(theta)
+        focusTargetObj.x + radius * Math.sin(phi) * Math.sin(theta),
+        focusTargetObj.y + radius * Math.cos(phi),
+        focusTargetObj.z + radius * Math.sin(phi) * Math.cos(theta)
       );
-      camera.lookAt(0, 0, 0);
+      camera.lookAt(focusTargetObj);
       // Slowly rotate clouds relative to earth
       if (clouds) clouds.rotation.y += 0.00008;
-      // Tumble debris + advance orbital position (slower motion)
+      // Tumble debris + advance orbital position
       debrisMeshes.forEach(m => {
-        m.rotation.x += m.userData.rotSpeed.x * 0.3;
-        m.rotation.y += m.userData.rotSpeed.y * 0.3;
-        m.rotation.z += m.userData.rotSpeed.z * 0.3;
+        m.rotation.x += m.userData.rotSpeed.x;
+        m.rotation.y += m.userData.rotSpeed.y;
+        m.rotation.z += m.userData.rotSpeed.z;
         const o = m.userData.satOrbit;
         if (o) {
-          o.theta += o.speed * 0.2; // Slow down debris to 20% speed
+          o.theta += o.speed;
           const pos = new THREE.Vector3()
             .addScaledVector(o.p0, Math.cos(o.theta))
             .addScaledVector(o.u, Math.sin(o.theta));
@@ -488,7 +536,6 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       });
 
       // Exhaust particles
-      const sc = sceneRef.current;
       if (sc?.exhaustActive) {
         for (let i = 0; i < 10; i++) {
           const p = sc.exhaust.particles.find(p => p.life <= 0);
@@ -537,14 +584,11 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         flareRing.scale.setScalar(1 + (1 - sc.flareProgress) * 7);
       }
 
-      // Advance satellites - SLOWER ORBITAL MOTION (8x speed for better visualization)
+      // Advance satellites - FASTER ORBITAL MOTION (40x speed for visualization)
       sc?.satGroups.forEach((group: THREE.Group) => {
         const o = group.userData.satOrbit;
-        if (o) {
-          // Slow down significantly when hovering over this satellite
-          const isHovered = hoveredId === group.userData.satId;
-          const speedMultiplier = isHovered ? 2 : 8; // 2x when hovered, 8x normal
-          o.theta += o.speed * speedMultiplier;
+        if (o && group.userData.satId !== sc.hoveredId) {
+          o.theta += o.speed * 40;  // 40x faster for realistic visual motion
           const pos = new THREE.Vector3()
             .addScaledVector(o.p0, Math.cos(o.theta))
             .addScaledVector(o.u, Math.sin(o.theta));
@@ -562,11 +606,12 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     animate();
 
     sceneRef.current = {
-      renderer, scene, camera, satGroups, satHitMeshes, debrisMeshes, orbitLines,
+      renderer, scene, camera, satGroups, satHitMeshes, debrisMeshes, orbitLines, nomOrbitLines,
       ghostOrbit: ghostOrbitLine, flareRing, flareProgress: 0,
       exhaust, exhaustActive: false,
       exhaustOrigin: new THREE.Vector3(), exhaustDir: new THREE.Vector3(1, 0, 0),
       earthGroup, stationGroup, animId, isDragging, lastMouse, theta, phi, radius,
+      focusTarget: focusTargetObj, targetRadius: 28, isAutoZooming: false, hoveredId: null,
     };
 
     const onResize = () => {
@@ -605,9 +650,13 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     s.orbitLines.forEach((line) => {
       s.scene.remove(line);
     });
+    s.nomOrbitLines.forEach((line) => {
+      s.scene.remove(line);
+    });
     s.satGroups.clear();
     s.satHitMeshes.clear();
     s.orbitLines.clear();
+    s.nomOrbitLines.clear();
 
     s.debrisMeshes.forEach((mesh) => {
       s.scene.remove(mesh);
@@ -624,7 +673,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
-      group.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: sat.orbitPhase };
+      group.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
       s.scene.add(group);
       s.satGroups.set(sat.id, group);
 
@@ -637,17 +686,27 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       s.scene.add(hitMesh);
       s.satHitMeshes.set(sat.id, hitMesh);
 
-      // Fixed blue orbit path for this satellite
       const orbitLine = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(buildOrbitPoints(sat.orbitRadius, sat.orbitInclination)),
-        new THREE.LineBasicMaterial({ 
-          color: 0x0088ff,  // Consistent blue for all orbits
-          transparent: true, 
-          opacity: 0.6
-        })
+        new THREE.BufferGeometry().setFromPoints(buildOrbitPointsFromVectors(p, u)),
+        new THREE.LineBasicMaterial({ color: STATUS_COLORS[sat.status], transparent: true, opacity: 0.35 })
       );
       s.scene.add(orbitLine);
       s.orbitLines.set(sat.id, orbitLine);
+
+      if (sat.nomPos && sat.nomVel) {
+        const np = new THREE.Vector3(...sat.nomPos);
+        const nv = new THREE.Vector3(...sat.nomVel);
+        const nr_mag = np.length();
+        const nn = new THREE.Vector3().crossVectors(np, nv).normalize();
+        const nu = new THREE.Vector3().crossVectors(nn, np).normalize().multiplyScalar(nr_mag);
+        const nomLine = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(buildOrbitPointsFromVectors(np, nu)),
+          new THREE.LineDashedMaterial({ color: 0x88aaff, transparent: true, opacity: 0.2, dashSize: 0.4, gapSize: 0.2 })
+        );
+        nomLine.computeLineDistances();
+        s.scene.add(nomLine);
+        s.nomOrbitLines.set(sat.id, nomLine);
+      }
     });
 
     // Add new debris
@@ -686,7 +745,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       s.scene.add(mesh);
       s.debrisMeshes.push(mesh);
     });
-  }, [satellites.length, debris.length]);
+  }, [tick, satellites, debris]);
 
   useEffect(() => {
     const s = sceneRef.current;
@@ -701,6 +760,15 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
   useEffect(() => {
     const s = sceneRef.current;
     if (!s) return;
+    s.hoveredId = hoveredId;
+    if (selectedId) {
+       s.targetRadius = 3.5;
+       s.isAutoZooming = true;
+    } else {
+       s.targetRadius = 28;
+       s.isAutoZooming = true;
+    }
+
     satellites.forEach(sat => {
       const group = s.satGroups.get(sat.id);
       const hitMesh = s.satHitMeshes.get(sat.id);
@@ -708,7 +776,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       
       const isSelected = sat.id === selectedId;
       const isHovered = sat.id === hoveredId;
-      const isFlaring = sat.id === flaringId;
+      const isFlaring = sat.id === flaringId || sat.status === 'maneuver';
       const scale = isFlaring ? 1.6 : isSelected ? 1.4 : isHovered ? 1.2 : 1;
       group.scale.setScalar(scale);
       hitMesh.scale.setScalar(scale);
@@ -727,6 +795,11 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const line = s.orbitLines.get(sat.id);
       if (line) {
         (line.material as THREE.LineBasicMaterial).opacity = isSelected ? 0.85 : isHovered ? 0.65 : 0.35;
+      }
+      
+      const nomLine = s.nomOrbitLines.get(sat.id);
+      if (nomLine) {
+        (nomLine.material as THREE.LineDashedMaterial).opacity = isSelected ? 0.6 : isHovered ? 0.4 : 0.15;
       }
       
       if (isFlaring) {

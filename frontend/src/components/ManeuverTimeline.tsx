@@ -1,478 +1,418 @@
-/**
- * Maneuver Timeline (Gantt Scheduler) - Chronological Burn Schedule
- * 
- * Displays:
- * - Past and future automated maneuvers
- * - Burn start/end blocks
- * - 600-second thruster cooldowns
- * - Conflicting commands (overlapping burns)
- * - Blackout zone overlaps (no ground station LOS)
- * 
- * Optimized for real-time updates at 60 FPS
- */
+import { useMemo } from 'react';
+import type { Maneuver, Satellite, ManeuverHistoryLog } from '../types';
 
-import React, { useMemo, useState } from 'react';
-import type { Satellite } from '../types';
-
-interface ManeuverEvent {
+interface TimelineBlock {
   id: string;
   satelliteId: string;
-  type: 'burn' | 'cooldown' | 'blackout';
-  startTime: Date;
-  endTime: Date;
-  deltaV?: number;
-  status: 'past' | 'current' | 'future';
-  conflict?: boolean;
+  label: string;
+  startHour: number;
+  durationHours: number;
+  tone: 'burn' | 'cooldown' | 'executed';
 }
 
 interface Props {
+  maneuvers: Maneuver[];
+  history: ManeuverHistoryLog[];
   satellites: Satellite[];
   simTime: string;
-  timeWindowMinutes?: number;
-  onClose?: () => void;
+  onClose: () => void;
 }
 
-// ============================================================================
-// STYLES
-// ============================================================================
+const HOURS = 24;
+const LABEL_WIDTH = 110;
+const ROW_HEIGHT = 46;
+const COOLDOWN_HOURS = 600 / 3600;
 
-const styles = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#0a0e27',
-    border: '1px solid #1a2a4a',
-    borderRadius: '4px',
-    overflow: 'hidden',
+const colors = {
+  burn: {
+    background: 'rgba(0, 212, 255, 0.18)',
+    border: '#00d4ff',
+    text: '#8ceaff',
   },
-
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px',
-    backgroundColor: '#0f1428',
-    borderBottom: '1px solid #1a2a4a',
-    fontSize: '13px',
-    fontWeight: 'bold' as const,
-    color: '#00d4ff',
+  cooldown: {
+    background: 'rgba(255, 184, 0, 0.16)',
+    border: '#ffb800',
+    text: '#ffd978',
   },
-
-  timelineContainer: {
-    display: 'flex',
-    flex: 1,
-    overflow: 'auto',
-    flexDirection: 'column' as const,
-  },
-
-  timelineRow: {
-    display: 'flex',
-    borderBottom: '1px solid #1a2a4a',
-    minHeight: '50px',
-  },
-
-  satelliteLabel: {
-    width: '100px',
-    padding: '8px',
-    backgroundColor: '#0f1428',
-    borderRight: '1px solid #1a2a4a',
-    fontSize: '11px',
-    fontWeight: 'bold' as const,
-    color: '#00d4ff',
-    display: 'flex',
-    alignItems: 'center',
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden' as const,
-    textOverflow: 'ellipsis' as const,
-  },
-
-  timelineContent: {
-    flex: 1,
-    position: 'relative' as const,
-    backgroundColor: '#0a0e27',
-    display: 'flex',
-    alignItems: 'center',
-    padding: '4px 0',
-  },
-
-  timelineBar: {
-    position: 'absolute' as const,
-    height: '24px',
-    borderRadius: '2px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '9px',
-    fontWeight: 'bold' as const,
-    color: '#ffffff',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    border: '1px solid',
-  },
-
-  burnBar: {
-    backgroundColor: '#00d4ff',
-    borderColor: '#00d4ff',
-  },
-
-  cooldownBar: {
-    backgroundColor: '#666666',
-    borderColor: '#888888',
-    opacity: 0.6,
-  },
-
-  blackoutBar: {
-    backgroundColor: '#ff3b3b',
-    borderColor: '#ff3b3b',
-    opacity: 0.3,
-  },
-
-  conflictBar: {
-    backgroundColor: '#ff3b3b',
-    borderColor: '#ff3b3b',
-    boxShadow: '0 0 8px #ff3b3b',
-  },
-
-  pastBar: {
-    opacity: 0.5,
-  },
-
-  currentBar: {
-    boxShadow: '0 0 12px currentColor',
-  },
-
-  timeAxis: {
-    display: 'flex',
-    height: '30px',
-    backgroundColor: '#0f1428',
-    borderBottom: '1px solid #1a2a4a',
-    borderRight: '1px solid #1a2a4a',
-    marginLeft: '100px',
-    position: 'relative' as const,
-  },
-
-  timeMarker: {
-    position: 'absolute' as const,
-    height: '100%',
-    borderRight: '1px solid #1a2a4a',
-    display: 'flex',
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    fontSize: '10px',
-    color: '#888888',
-    paddingBottom: '4px',
-  },
-
-  legend: {
-    display: 'flex',
-    gap: '16px',
-    padding: '8px 12px',
-    backgroundColor: '#0f1428',
-    borderTop: '1px solid #1a2a4a',
-    fontSize: '11px',
-    color: '#888888',
-  },
-
-  legendItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-  },
-
-  legendBox: {
-    width: '16px',
-    height: '16px',
-    borderRadius: '2px',
-  },
-
-  tooltip: {
-    position: 'absolute' as const,
-    backgroundColor: '#0f1428',
-    border: '1px solid #1a2a4a',
-    borderRadius: '3px',
-    padding: '8px',
-    fontSize: '10px',
-    color: '#00d4ff',
-    zIndex: 1000,
-    pointerEvents: 'none' as const,
-    maxWidth: '200px',
+  executed: {
+    background: 'rgba(0, 255, 136, 0.16)',
+    border: '#00ff88',
+    text: '#8cffc0',
   },
 };
 
-// ============================================================================
-// UTILITIES
-// ============================================================================
-
-/**
- * Generate mock maneuver events for demonstration
- * In production, these would come from the backend
- */
-function generateManeuverEvents(satellites: Satellite[], simTime: string, windowMinutes: number): ManeuverEvent[] {
-  const events: ManeuverEvent[] = [];
-  const now = new Date(simTime);
-  const windowMs = windowMinutes * 60 * 1000;
-
-  satellites.forEach((sat, satIndex) => {
-    // Generate 2-3 random maneuvers per satellite in the window
-    const maneuverCount = Math.floor(Math.random() * 3) + 1;
-
-    for (let i = 0; i < maneuverCount; i++) {
-      const burnStartOffset = Math.random() * windowMs;
-      const burnDuration = 60 * 1000; // 60 seconds
-      const cooldownDuration = 600 * 1000; // 600 seconds
-
-      const burnStart = new Date(now.getTime() + burnStartOffset);
-      const burnEnd = new Date(burnStart.getTime() + burnDuration);
-      const cooldownEnd = new Date(burnEnd.getTime() + cooldownDuration);
-
-      // Determine status
-      let status: 'past' | 'current' | 'future' = 'future';
-      if (burnEnd.getTime() < now.getTime()) status = 'past';
-      else if (burnStart.getTime() <= now.getTime() && burnEnd.getTime() >= now.getTime()) status = 'current';
-
-      // Burn event
-      events.push({
-        id: `${sat.id}-burn-${i}`,
-        satelliteId: sat.id,
-        type: 'burn',
-        startTime: burnStart,
-        endTime: burnEnd,
-        deltaV: 0.001 + Math.random() * 0.01,
-        status,
-        conflict: false,
-      });
-
-      // Cooldown event
-      events.push({
-        id: `${sat.id}-cooldown-${i}`,
-        satelliteId: sat.id,
-        type: 'cooldown',
-        startTime: burnEnd,
-        endTime: cooldownEnd,
-        status,
-        conflict: false,
-      });
-
-      // Random blackout zones (no LOS)
-      if (Math.random() < 0.3) {
-        const blackoutStart = new Date(burnStart.getTime() + Math.random() * 300000);
-        const blackoutEnd = new Date(blackoutStart.getTime() + 120000); // 2 minutes
-
-        events.push({
-          id: `${sat.id}-blackout-${i}`,
-          satelliteId: sat.id,
-          type: 'blackout',
-          startTime: blackoutStart,
-          endTime: blackoutEnd,
-          status: 'future',
-          conflict: false,
-        });
-      }
-    }
-  });
-
-  // Detect conflicts (overlapping burns on same satellite)
-  const burnsBysat = new Map<string, ManeuverEvent[]>();
-  events.filter(e => e.type === 'burn').forEach(e => {
-    if (!burnsBysat.has(e.satelliteId)) burnsBysat.set(e.satelliteId, []);
-    burnsBysat.get(e.satelliteId)!.push(e);
-  });
-
-  burnsBysat.forEach(burns => {
-    for (let i = 0; i < burns.length; i++) {
-      for (let j = i + 1; j < burns.length; j++) {
-        const a = burns[i];
-        const b = burns[j];
-        if (a.startTime < b.endTime && b.startTime < a.endTime) {
-          a.conflict = true;
-          b.conflict = true;
-        }
-      }
-    }
-  });
-
-  return events.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+function clampHour(value: number) {
+  return Math.max(0, Math.min(HOURS, value));
 }
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
+export default function ManeuverTimeline({ maneuvers, history, satellites, simTime, onClose }: Props) {
+  const timelineBlocks = useMemo(() => {
+    const blocks: TimelineBlock[] = [];
 
-export default function ManeuverTimeline({
-  satellites,
-  simTime,
-  timeWindowMinutes = 1440,
-  onClose,
-}: Props) {
-  const [hoveredEvent, setHoveredEvent] = useState<ManeuverEvent | null>(null);
-  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+    maneuvers.forEach((maneuver) => {
+      const startHour = clampHour(maneuver.startHour);
+      const durationHours = Math.max(maneuver.durationHours, 1 / 120);
+      const burnEnd = clampHour(startHour + durationHours);
 
-  const now = new Date(simTime);
-  const windowMs = timeWindowMinutes * 60 * 1000;
-  const windowStart = new Date(now.getTime() - windowMs / 2);
-  const windowEnd = new Date(now.getTime() + windowMs / 2);
-
-  // Generate maneuver events
-  const events = useMemo(() => {
-    return generateManeuverEvents(satellites, simTime, timeWindowMinutes);
-  }, [satellites, simTime, timeWindowMinutes]);
-
-  // Group events by satellite
-  const eventsBySatellite = useMemo(() => {
-    const grouped = new Map<string, ManeuverEvent[]>();
-    satellites.forEach(sat => {
-      grouped.set(sat.id, events.filter(e => e.satelliteId === sat.id));
-    });
-    return grouped;
-  }, [events, satellites]);
-
-  // Calculate pixel position from time
-  const timeToPixel = (time: Date, containerWidth: number): number => {
-    const totalMs = windowEnd.getTime() - windowStart.getTime();
-    const offsetMs = time.getTime() - windowStart.getTime();
-    return (offsetMs / totalMs) * containerWidth;
-  };
-
-  // Generate time axis markers
-  const timeMarkers = useMemo(() => {
-    const markers = [];
-    const numMarkers = timeWindowMinutes === 1440 ? 24 : 12;
-    const step = windowMs / numMarkers;
-    for (let i = 0; i <= numMarkers; i++) {
-      const time = new Date(windowStart.getTime() + i * step);
-      markers.push({
-        time,
-        label: time.toISOString().split('T')[1].split('.')[0],
+      blocks.push({
+        id: maneuver.id,
+        satelliteId: maneuver.satelliteId,
+        label: maneuver.executed ? 'Executed Burn' : 'Burn Window',
+        startHour,
+        durationHours: Math.max(burnEnd - startHour, 1 / 120),
+        tone: maneuver.executed ? 'executed' : 'burn',
       });
-    }
-    return markers;
-  }, [windowStart, windowMs, timeWindowMinutes]);
 
-  const handleMouseMove = (e: React.MouseEvent, event: ManeuverEvent) => {
-    setHoveredEvent(event);
-    setTooltipPos({ x: e.clientX, y: e.clientY });
-  };
+      const cooldownStart = burnEnd;
+      const cooldownEnd = clampHour(cooldownStart + COOLDOWN_HOURS);
+      if (cooldownEnd > cooldownStart) {
+        blocks.push({
+          id: `${maneuver.id}-cooldown`,
+          satelliteId: maneuver.satelliteId,
+          label: 'Cooldown',
+          startHour: cooldownStart,
+          durationHours: cooldownEnd - cooldownStart,
+          tone: 'cooldown',
+        });
+      }
+    });
+
+    return blocks;
+  }, [maneuvers]);
+
+  const satelliteIds = useMemo(() => {
+    const ordered = satellites.map((sat) => sat.id);
+    const fromManeuvers = maneuvers.map((maneuver) => maneuver.satelliteId);
+    return Array.from(new Set([...ordered, ...fromManeuvers]));
+  }, [maneuvers, satellites]);
+
+  const simDate = new Date(simTime);
+  const validSimTime = !Number.isNaN(simDate.getTime());
+  const cursorHour = 0;
+
+  const hourLabels = Array.from({ length: 13 }, (_, index) => index * 2);
 
   return (
-    <div style={styles.container}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {onClose && (
-            <button onClick={onClose} style={{
-              background: 'transparent', border: '1px solid var(--cyan)', 
-              color: 'var(--cyan)', borderRadius: 4, padding: '4px 12px',
-              fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 'bold',
-              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-              transition: 'all 0.15s'
-            }}>
-              ← BACK
-            </button>
-          )}
-          <div>📅 Maneuver Timeline (Gantt Scheduler)</div>
-        </div>
-        <div style={{ fontSize: '11px', color: '#888888' }}>
-          Window: {timeWindowMinutes / 60} hrs | Current: {now.toISOString().split('T')[1].split('.')[0]}
-        </div>
-      </div>
-
-      {/* Time Axis */}
-      <div style={styles.timeAxis}>
-        {timeMarkers.map((marker, i) => (
-          <div
-            key={i}
-            style={{
-              ...styles.timeMarker,
-              left: `${(i / (timeWindowMinutes === 1440 ? 24 : 12)) * 100}%`,
-              width: `${100 / (timeWindowMinutes === 1440 ? 24 : 12)}%`,
-            }}
-          >
-            {marker.label}
-          </div>
-        ))}
-      </div>
-
-      {/* Timeline Rows */}
-      <div style={styles.timelineContainer}>
-        {satellites.map(sat => (
-          <div key={sat.id} style={styles.timelineRow}>
-            <div style={styles.satelliteLabel}>{sat.id}</div>
-            <div style={styles.timelineContent}>
-              {eventsBySatellite.get(sat.id)?.map(event => {
-                const startPx = timeToPixel(event.startTime, 1000); // Approximate
-                const endPx = timeToPixel(event.endTime, 1000);
-                const width = Math.max(endPx - startPx, 20);
-
-                let barStyle = styles.timelineBar;
-                if (event.type === 'burn') barStyle = { ...barStyle, ...styles.burnBar };
-                else if (event.type === 'cooldown') barStyle = { ...barStyle, ...styles.cooldownBar };
-                else if (event.type === 'blackout') barStyle = { ...barStyle, ...styles.blackoutBar };
-
-                if (event.conflict) barStyle = { ...barStyle, ...styles.conflictBar };
-                if (event.status === 'past') barStyle = { ...barStyle, ...styles.pastBar };
-                if (event.status === 'current') barStyle = { ...barStyle, ...styles.currentBar };
-
-                return (
-                  <div
-                    key={event.id}
-                    style={{
-                      ...barStyle,
-                      left: `${(event.startTime.getTime() - windowStart.getTime()) / windowMs * 100}%`,
-                      width: `${(event.endTime.getTime() - event.startTime.getTime()) / windowMs * 100}%`,
-                    }}
-                    onMouseMove={(e) => handleMouseMove(e, event)}
-                    onMouseLeave={() => setHoveredEvent(null)}
-                    title={`${event.type.toUpperCase()}: ${event.startTime.toISOString().split('T')[1]} - ${event.endTime.toISOString().split('T')[1]}`}
-                  >
-                    {event.type === 'burn' && event.deltaV && `Δv: ${event.deltaV.toFixed(4)}`}
-                    {event.type === 'cooldown' && 'COOLDOWN'}
-                    {event.type === 'blackout' && 'BLACKOUT'}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Legend */}
-      <div style={styles.legend}>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, backgroundColor: '#00d4ff' }} />
-          Burn (Δv maneuver)
-        </div>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, backgroundColor: '#666666', opacity: 0.6 }} />
-          Cooldown (600s)
-        </div>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, backgroundColor: '#ff3b3b', opacity: 0.3 }} />
-          Blackout (no LOS)
-        </div>
-        <div style={styles.legendItem}>
-          <div style={{ ...styles.legendBox, backgroundColor: '#ff3b3b', boxShadow: '0 0 8px #ff3b3b' }} />
-          Conflict (overlapping)
-        </div>
-      </div>
-
-      {/* Tooltip */}
-      {hoveredEvent && (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(2, 8, 23, 0.72)',
+        backdropFilter: 'blur(8px)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+      }}
+    >
+      <div
+        style={{
+          width: 'min(1200px, 100%)',
+          height: 'min(860px, 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'linear-gradient(180deg, rgba(15,23,42,0.98), rgba(2,8,23,0.98))',
+          border: '1px solid rgba(0,212,255,0.25)',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.45)',
+          borderRadius: 16,
+          overflow: 'hidden',
+        }}
+      >
         <div
           style={{
-            ...styles.tooltip,
-            left: `${tooltipPos.x + 10}px`,
-            top: `${tooltipPos.y + 10}px`,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '18px 22px',
+            borderBottom: '1px solid var(--border)',
+            background: 'rgba(15,23,42,0.88)',
           }}
         >
-          <div><strong>{hoveredEvent.satelliteId}</strong></div>
-          <div>{hoveredEvent.type.toUpperCase()}</div>
-          <div>{hoveredEvent.startTime.toISOString().split('T')[1]}</div>
-          {hoveredEvent.deltaV && <div>Δv: {hoveredEvent.deltaV.toFixed(4)} km/s</div>}
-          {hoveredEvent.conflict && <div style={{ color: '#ff3b3b' }}>⚠️ CONFLICT</div>}
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: 2, color: 'var(--cyan)' }}>
+              MANEUVER TIMELINE
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>
+              24-hour scheduler for burn windows and mandatory 600-second cooldowns.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
+              {validSimTime ? `SIM UTC ${simDate.toISOString().slice(0, 19).replace('T', ' ')}` : 'SIM UTC unavailable'}
+            </div>
+            <button
+              onClick={onClose}
+              style={{
+                border: '1px solid rgba(255,255,255,0.16)',
+                background: 'rgba(255,255,255,0.04)',
+                color: 'var(--text-primary)',
+                borderRadius: 8,
+                width: 38,
+                height: 38,
+                cursor: 'pointer',
+                fontSize: 18,
+              }}
+              aria-label="Close maneuver timeline"
+            >
+              ×
+            </button>
+          </div>
         </div>
-      )}
+
+        <div style={{ padding: '14px 22px', borderBottom: '1px solid rgba(148,163,184,0.12)', display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+          <LegendChip label="Scheduled Burn" tone="burn" />
+          <LegendChip label="Cooldown" tone="cooldown" />
+          <LegendChip label="Executed Burn" tone="executed" />
+        </div>
+
+        <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+          <div
+            style={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 4,
+              display: 'flex',
+              minWidth: 960,
+              background: 'rgba(2,8,23,0.96)',
+              borderBottom: '1px solid rgba(148,163,184,0.12)',
+            }}
+          >
+            <div style={{ width: LABEL_WIDTH, flexShrink: 0, borderRight: '1px solid rgba(148,163,184,0.12)' }} />
+            <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)' }}>
+              {hourLabels.map((hour) => (
+                <div
+                  key={hour}
+                  style={{
+                    padding: '10px 8px',
+                    borderLeft: '1px solid rgba(148,163,184,0.08)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10,
+                    color: 'var(--text-dim)',
+                  }}
+                >
+                  T+{String(hour).padStart(2, '0')}h
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ minWidth: 960, position: 'relative' }}>
+            {satelliteIds.length === 0 && (
+              <EmptyState />
+            )}
+
+            {satelliteIds.map((satelliteId) => {
+              const blocks = timelineBlocks.filter((block) => block.satelliteId === satelliteId);
+              return (
+                <div
+                  key={satelliteId}
+                  style={{
+                    display: 'flex',
+                    minHeight: ROW_HEIGHT,
+                    borderBottom: '1px solid rgba(148,163,184,0.08)',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: LABEL_WIDTH,
+                      flexShrink: 0,
+                      padding: '12px 14px',
+                      borderRight: '1px solid rgba(148,163,184,0.12)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 10,
+                      color: 'var(--text-secondary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    {satelliteId}
+                  </div>
+                  <div
+                    style={{
+                      flex: 1,
+                      position: 'relative',
+                      backgroundImage: 'linear-gradient(to right, rgba(148,163,184,0.08) 1px, transparent 1px)',
+                      backgroundSize: '8.3333% 100%',
+                    }}
+                  >
+                    {blocks.map((block) => {
+                      const palette = colors[block.tone];
+                      return (
+                        <div
+                          key={block.id}
+                          title={`${block.label} | ${block.startHour.toFixed(2)}h | ${block.durationHours.toFixed(2)}h`}
+                          style={{
+                            position: 'absolute',
+                            top: 8,
+                            left: `${(block.startHour / HOURS) * 100}%`,
+                            width: `${Math.max((block.durationHours / HOURS) * 100, 0.7)}%`,
+                            minWidth: 12,
+                            height: ROW_HEIGHT - 16,
+                            borderRadius: 8,
+                            border: `1px solid ${palette.border}`,
+                            background: palette.background,
+                            color: palette.text,
+                            display: 'flex',
+                            alignItems: 'center',
+                            padding: '0 8px',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 9,
+                            letterSpacing: 0.6,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {block.label}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+
+            {satelliteIds.length > 0 && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: LABEL_WIDTH,
+                  right: 0,
+                  pointerEvents: 'none',
+                }}
+              >
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    left: `${(cursorHour / HOURS) * 100}%`,
+                    width: 1,
+                    background: 'rgba(255,59,59,0.9)',
+                    boxShadow: '0 0 12px rgba(255,59,59,0.8)',
+                  }}
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 10,
+                      left: 6,
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 9,
+                      color: '#ff8a8a',
+                      letterSpacing: 1,
+                    }}
+                  >
+                    NOW
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, borderTop: '1px solid rgba(148,163,184,0.12)', background: 'rgba(2,8,23,0.95)', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '14px 22px', borderBottom: '1px solid rgba(148,163,184,0.08)' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: 1.5, color: 'var(--text-secondary)' }}>
+              EXECUTION LOG — HISTORICAL MANEUVERS ({history.length})
+            </div>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 22px' }}>
+            {history.length === 0 ? (
+              <div style={{ color: 'var(--text-dim)', fontSize: 12, fontFamily: 'var(--font-mono)', padding: '24px 0', textAlign: 'center' }}>
+                No maneuver executions logged.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {history.map(log => (
+                  <div key={log.burn_id} style={{
+                    display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center',
+                    padding: '12px 16px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8
+                  }}>
+                    <div style={{ flex: '0 0 140px' }}>
+                      <div style={{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--cyan)' }}>{log.satellite_id}</div>
+                      <div style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', marginTop: 4 }}>
+                        {new Date(log.timestamp).toISOString().replace('T', ' ').slice(0, 19)}
+                      </div>
+                    </div>
+                    
+                    <div style={{ flex: '0 0 100px' }}>
+                      <LegendChip label={log.type.toUpperCase()} tone={log.type === 'avoidance' ? 'burn' : 'executed'} />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 24, flex: 1 }}>
+                      <div>
+                        <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>ΔV TRIGGERED</div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)', marginTop: 2 }}>
+                          {log.delta_v_kms.toFixed(4)} km/s
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>FUEL EXPENSE</div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--red)', marginTop: 2 }}>
+                          -{log.fuel_burned_kg.toFixed(3)} kg
+                        </div>
+                        <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 2 }}>rem: {log.fuel_remaining_kg.toFixed(2)}kg</div>
+                      </div>
+
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 9, color: 'var(--text-dim)' }}>ORBITAL INJECTION VECTORS (km, km/s)</div>
+                        <div style={{ display: 'flex', gap: 12, marginTop: 2 }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#aaa' }}>
+                            POS [{log.x_km.toFixed(1)}, {log.y_km.toFixed(1)}, {log.z_km.toFixed(1)}]
+                          </span>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: '#aaa' }}>
+                            VEL [{log.vx_kms.toFixed(3)}, {log.vy_kms.toFixed(3)}, {log.vz_kms.toFixed(3)}]
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LegendChip({ label, tone }: { label: string; tone: keyof typeof colors }) {
+  const palette = colors[tone];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span
+        style={{
+          width: 14,
+          height: 14,
+          borderRadius: 4,
+          border: `1px solid ${palette.border}`,
+          background: palette.background,
+          display: 'inline-block',
+        }}
+      />
+      <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{label}</span>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div
+      style={{
+        padding: '48px 24px',
+        color: 'var(--text-dim)',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 12,
+        textAlign: 'center',
+      }}
+    >
+      No satellites or maneuvers are available for the current simulation snapshot.
     </div>
   );
 }

@@ -1,319 +1,242 @@
-# 🛰️ Autonomous Constellation Manager
+# ACM
 
-Drive link: https://drive.google.com/drive/folders/1weXqaLgwXBDuzULpHXSRx9SagEeRGceT?usp=sharing
+**Autonomous Constellation Manager**
 
-**Real-time satellite tracking with beautiful orbital visualization**
+ACM is a multi-service orbital operations stack for tracking satellites and debris, forecasting conjunctions, planning collision-avoidance maneuvers, and visualizing fleet state through a live mission-control dashboard.
 
-Built for the National Space Hackathon 2026 • Watch satellites dance on blue orbits around Earth
+![ACM dashboard](docs/screenshots/dashboard.png)
 
-[![Status](https://img.shields.io/badge/status-operational-brightgreen)]()
-[![Satellites](https://img.shields.io/badge/satellites-55-blue)]()
-[![Debris](https://img.shields.io/badge/debris-1400-orange)]()
-[![Physics](https://img.shields.io/badge/physics-RK4%2BJ2-purple)]()
+## What ACM does
 
----
+- Ingests ECI telemetry for satellites and debris through a FastAPI API and a Go persistence adapter.
+- Propagates orbital states with numerical integration and J2 perturbation terms.
+- Screens for close approaches with KD-tree-assisted conjunction detection.
+- Schedules RTN-frame burns and converts them into executable ECI delta-v commands.
+- Tracks station-keeping drift, fuel consumption, cooldown windows, and end-of-life status.
+- Exposes compact visualization snapshots for the React dashboard.
 
-## 👋 What Is This?
+## System Architecture
 
-Imagine looking at Earth from space and seeing **55 satellites** gracefully gliding along bright blue orbital paths, while **1,400+ pieces of space debris** float around them. That's exactly what this app shows you—in real-time, with realistic physics.
+```text
+React + TypeScript Dashboard
+        |
+        v
+FastAPI Physics Engine  (:8000)
+        |
+        v
+Go Adapter / Persistence Layer  (:8080)
+        |
+        v
+MongoDB / external object store
+```
 
-Every satellite position is calculated using actual orbital mechanics (not just animated circles), making this a genuine simulation of what's happening in Low Earth Orbit right now.
+## Repository Layout
 
----
+```text
+frontend/      React dashboard, globe view, telemetry panels, timeline UI
+backend/       FastAPI APIs, orbital mechanics, simulation state, tests
+go-adapter/    Go service for ingestion and persistence
+docs/          Screenshots and supporting assets
+```
 
-## 🎬 See It In Action
+## Physics Model
+
+### State vector
+
+All objects are modeled in the Earth-Centered Inertial frame using:
+
+```math
+S(t)=
+\begin{bmatrix}
+x & y & z & v_x & v_y & v_z
+\end{bmatrix}^T
+```
+
+Position is in kilometers and velocity is in kilometers per second.
+
+### Orbital propagation
+
+The propagated acceleration is:
+
+```math
+\ddot{\vec r} = -\frac{\mu}{|\vec r|^3}\vec r + \vec a_{J2}
+```
+
+with:
+
+- `mu = 398600.4418 km^3/s^2`
+- `R_E = 6378.137 km`
+- `J2 = 1.08263e-3`
+
+The J2 perturbation term implemented in the backend is:
+
+```math
+\vec a_{J2} =
+\frac{3}{2}J_2\mu R_E^2 |\vec r|^{-5}
+\begin{bmatrix}
+x(5z^2/|\vec r|^2 - 1) \\
+y(5z^2/|\vec r|^2 - 1) \\
+z(5z^2/|\vec r|^2 - 3)
+\end{bmatrix}
+```
+
+The main propagator uses fixed-step RK4 with sub-stepping and also includes an adaptive `solve_ivp` path for longer horizons.
+
+### Conjunction threshold
+
+A critical conjunction is defined as:
+
+```math
+|\vec r_{sat}(t) - \vec r_{deb}(t)| < 0.100 \text{ km}
+```
+
+The backend uses KD-tree coarse screening plus TCA refinement.
+
+### Maneuver frame conversion
+
+Burns are planned in the local RTN frame and rotated back into ECI:
+
+```math
+\Delta \vec v_{ECI} = [\hat R \ \hat T \ \hat N]\Delta \vec v_{RTN}
+```
+
+### Fuel consumption
+
+Fuel depletion is computed with the Tsiolkovsky rocket equation:
+
+```math
+\Delta m = m_{current}\left(1 - e^{-|\Delta \vec v|/(I_{sp} g_0)}\right)
+```
+
+with:
+
+- `Isp = 300 s`
+- `g0 = 9.80665e-3 km/s^2`
+
+## APIs
+
+### `POST /api/telemetry`
+
+Bulk ingestion of live ECI state vectors for satellites and debris.
+
+### `POST /api/maneuver/schedule`
+
+Queues one or more burn commands for a satellite using RTN-frame delta-v vectors.
+
+### `POST /api/simulate/step`
+
+Advances the simulation clock, executes due burns, propagates all objects, updates drift, and regenerates conjunction warnings.
+
+### `GET /api/visualization/snapshot`
+
+Returns a compact dashboard payload containing:
+
+- current timestamp
+- satellites with lat/lon, fuel, status, and ECI state
+- flattened debris cloud tuples
+- active CDM warnings
+
+## Frontend Modules
+
+- `GlobeScene`: 3D Earth view with satellites, debris, and orbital context
+- `SatelliteList`: left-side fleet browser and status list
+- `DetailPanel`: selected-satellite state and maneuver controls
+- `ManeuverTimeline`: Gantt-style burn and cooldown view
+- `TelemetryHeatmap`, `ConjunctionBullseye`, `GroundTrackMap`: supporting visualization modules already present in the repo
+
+## Operational Workflow
+
+1. Telemetry arrives as ECI position and velocity updates.
+2. ACM updates in-memory object state.
+3. The simulator propagates satellites, debris, and nominal slots.
+4. Conjunction logic identifies close-approach candidates and computes TCA / miss distance.
+5. If a maneuver is required, ACM creates a burn sequence in RTN and stores it in the queue.
+6. The step engine executes due burns, applies fuel loss and cooldown logic, and updates object status.
+7. The visualization snapshot endpoint feeds the React dashboard.
+
+## Objective Coverage Status
+
+This repo covers many of the ACM requirements, but not all of them completely.
+
+| Objective | Status | Notes |
+|---|---|---|
+| High-frequency telemetry ingestion | Implemented | FastAPI bulk ingestion exists; Go adapter and persistence layer are present. |
+| Predictive conjunction assessment | Partially implemented | KD-tree screening and TCA logic exist, but the end-to-end 24-hour fleet-scale assessment is not fully hardened or benchmarked in this repo. |
+| Autonomous collision avoidance | Partially implemented | RTN burn planning, scheduling, cooldown enforcement, and execution exist; optimization quality and mission-grade maneuver strategy are still simplified. |
+| Station-keeping and recovery | Partially implemented | Drift tracking and automatic recovery planning exist, but recovery is still basic and not yet a full mission-slot optimizer. |
+| Propellant budgeting and EOL management | Partially implemented | Fuel accounting and EOL checks exist; graveyard-orbit disposal logic is not fully complete end-to-end. |
+| Global multi-objective optimization | Not fully implemented | There is no completed fleet-wide optimizer balancing uptime against fuel across the constellation. |
+| Visualization modules | Partially implemented | The dashboard shell and several modules exist; not every required visual is fully finished or fully wired to live backend data. |
+
+## What was fixed in this pass
+
+- Restored the Maneuver Timeline view so it renders as a proper overlay instead of failing when opened.
+- Wired the frontend scheduling payload to the backend API contract.
+- Pulled pending burns into the UI timeline so scheduled actions can appear again.
+- Corrected the LOS/ground-station bug path by distinguishing ECI-based visibility checks.
+- Removed stray backup files from the Go adapter tree.
+- Added a real dashboard screenshot for documentation.
+
+## Running ACM
+
+### Frontend
 
 ```bash
-# Clone the repo
-git clone <your-repo-url>
-cd NSH_debris
-
-# Start everything (takes ~30 seconds)
-docker-compose up --build -d
-
-# Add satellites and debris to the database
-python emergency_seed.py
-
-# Open your browser
-# → http://localhost:3000
-```
-
-**That's it!** You should now see a beautiful 3D Earth with satellites moving on blue orbits.
-
----
-
-## ✨ What You'll Love
-
-### 🌍 Stunning Visualization
-- **Realistic Earth** with textures, clouds, and country borders
-- **Blue orbital paths** showing exactly where each satellite travels
-- **Smooth 60fps animation** updating every 2 seconds
-- **Interactive controls**: click, drag, zoom, explore
-
-### 🛰️ Real Satellites, Real Physics
-- **55 satellites** in diverse orbits (LEO, MEO, GEO)
-- **Each satellite has unique orbital parameters**: different altitudes, inclinations, speeds
-- **RK4 + J2 physics engine** calculating positions using actual equations
-- **Positions update every 10 seconds** based on gravitational forces
-
-### ☄️ Space Debris Cloud
-- **1,400+ debris objects** scattered across orbit
-- Different sizes and shapes representing real space junk
-- Color-coded for visibility against the blackness of space
-
-### 🎯 Interactive Features
-- **Click any satellite** to see its details (altitude, speed, fuel, status)
-- **Hover for quick info** tooltips
-- **Plan maneuvers** to avoid collisions (with ghost orbit preview!)
-- **Watch thruster effects** when satellites burn
-
----
-
-## 🧠 How It Works (The Simple Version)
-
-```
-Your Browser (Port 3000)
-    ↓ "Where are the satellites?"
-Python Backend (Port 8000)
-    ↓ "Let me calculate using physics..."
-    ↓ (RK4 + J2 equations)
-Go Adapter (Port 8080)
-    ↓ "Here's the latest data"
-MongoDB Atlas (Cloud Database)
-    ← Stores all satellite positions
-```
-
-### The Magic Behind The Scenes
-
-1. **Database stores** the current position & velocity of every object
-2. **Python backend** runs physics calculations every 10 seconds:
-   - Uses RK4 (4th-order Runge-Kutta) integration
-   - Adds J2 perturbation for Earth's equatorial bulge
-   - Updates positions in the database
-3. **Frontend polls** every 2 seconds for smooth animation
-4. **Three.js renders** everything in your browser with WebGL
-
-Result: Satellites that actually follow orbital mechanics, not just pretty circles!
-
----
-
-## 🎮 Using The App
-
-### Basic Navigation
-- **Drag** to rotate around Earth
-- **Scroll** to zoom in/out
-- **Click** a satellite to select it
-- **Hover** over satellites for quick info
-
-### Understanding What You See
-
-**Blue Lines** = Orbital paths (satellites stay on these tracks)
-
-**Satellite Colors**:
-- 🔵 Cyan = Healthy and nominal
-- 🟡 Yellow = Warning (something needs attention)
-- 🔴 Red = Critical (urgent action needed)
-
-**Debris** = Orange/brown irregular shapes floating in space
-
-### Planning A Maneuver
-
-When a satellite needs to dodge debris:
-
-1. Click the satellite to select it
-2. Click **"Plan Maneuver"** button
-3. Choose direction:
-   - **Prograde** = Speed up (raises orbit)
-   - **Retrograde** = Slow down (lowers orbit)
-   - **Radial/Anti-radial** = Move toward/away from Earth
-   - **Normal/Anti-normal** = Change orbital inclination
-4. See the **ghost orbit** (dashed line) showing the new path
-5. Execute the burn and watch the thruster flame!
-
----
-
-## 🛠️ For Developers
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React 19 + TypeScript + Three.js + Vite |
-| Backend API | Python FastAPI |
-| Physics Engine | NumPy with RK4 + J2 |
-| Database Bridge | Go 1.22 + Gin Framework |
-| Database | MongoDB Atlas (cloud) |
-| Deployment | Docker Compose |
-
-### Project Structure
-
-```
-NSH_debris/
-├── frontend/              # React UI
-│   ├── src/
-│   │   ├── components/
-│   │   │   └── GlobeScene.tsx    # 3D visualization magic
-│   │   └── usePhysicsSimulation.ts # Connects to backend
-│   └── package.json
-│
-├── backend/               # Python physics engine
-│   ├── app/
-│   │   ├── api/          # REST endpoints
-│   │   ├── physics/      # RK4 + J2 propagator
-│   │   └── background_propagator.py  # Updates every 10s
-│   └── requirements.txt
-│
-├── go-adapter/            # MongoDB interface
-│   ├── internal/
-│   │   ├── api/          # HTTP handlers
-│   │   └── repository/   # Database operations
-│   └── main.go
-│
-├── docker-compose.yml     # Runs everything together
-├── .env                   # MongoDB credentials
-└── emergency_seed.py      # Populates database
-```
-
-### Running Services Separately
-
-For development or debugging:
-
-```bash
-# Terminal 1: Go Adapter
-cd go-adapter
-go run main.go
-
-# Terminal 2: Python Backend  
-cd backend
-python -m uvicorn app.main:app --reload --port 8000
-
-# Terminal 3: Frontend
 cd frontend
 npm install
 npm run dev
 ```
 
-### Useful Endpoints
-
-| URL | What It Does |
-|-----|-------------|
-| http://localhost:3000 | Main app |
-| http://localhost:8000/docs | API documentation (Swagger) |
-| http://localhost:8000/status | System health check |
-| http://localhost:8000/api/visualization/snapshot | Current satellite positions |
-| http://localhost:8080/objects | Raw database data |
-
-### Adding Test Data
+### Backend
 
 ```bash
-python emergency_seed.py
+cd backend
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-This creates:
-- 55 satellites with random but realistic orbits
-- 1,200+ debris objects
-- All with proper position and velocity vectors
+### Go adapter
 
----
-
-## 🌟 Why This Is Cool
-
-### 1. Real Physics, Not Animation
-Most space visualizations just animate dots in circles. We're actually solving differential equations using the same methods NASA uses. Every position is mathematically correct.
-
-### 2. Handles Thousands of Objects
-The architecture is designed for scale. Buffered writes, async processing, and optimized JSON payloads mean it can handle real-world constellation sizes.
-
-### 3. Beautiful AND Functional
-The blue orbital paths aren't just pretty—they show you exactly where satellites will travel. The ghost orbit preview during maneuvers helps you understand orbital mechanics intuitively.
-
-### 4. Production-Ready APIs
-Clean REST endpoints following industry standards. You could plug this into real satellite operations tomorrow.
-
----
-
-## 🐛 Troubleshooting
-
-### No satellites visible?
-
-Check if the database has data:
 ```bash
-curl http://localhost:8000/status
+cd go-adapter
+go run main.go
 ```
 
-If counts are 0, seed the database:
+### Docker
+
 ```bash
-python emergency_seed.py
+docker compose up --build
 ```
 
-### Frontend won't load?
+## Submission Files
 
-Check if services are running:
+- Root grading container: `Dockerfile`
+- Technical report source: `TECHNICAL_REPORT.md`
+- Demo outline: `VIDEO_DEMO_SCRIPT.md`
+- Submission checklist: `SUBMISSION_GUIDE.md`
+
+## Verification
+
+Frontend production build:
+
 ```bash
-docker-compose ps
+cd frontend
+npm run build
 ```
 
-Restart if needed:
+Backend visualization tests:
+
 ```bash
-docker-compose restart
+python -m pytest backend/tests/test_visualization.py -q
 ```
 
-### Performance issues?
+Physics test suite:
 
-- Use Chrome or Firefox (best WebGL support)
-- Set browser zoom to 100%
-- Close other GPU-intensive apps
-- Try reducing the number of debris objects in `emergency_seed.py`
+```bash
+python backend/app/physics/tests/run_tests.py
+```
 
----
+## Implementation Notes
 
-## 📊 Technical Highlights
-
-### Physics Accuracy
-- **RK4 Integration**: 4th-order Runge-Kutta numerical method
-- **J2 Perturbation**: Accounts for Earth's oblateness (makes orbits precess)
-- **Coordinate System**: ECI (Earth-Centered Inertial) J2000
-- **Units**: Position in km, Velocity in km/s
-
-### Performance
-- **Backend propagation**: Every 10 seconds
-- **Frontend updates**: Every 2 seconds  
-- **API response time**: <50ms average
-- **Rendering**: 60 FPS with 1,400+ objects
-- **Network optimization**: Flattened debris arrays reduce payload by 60%
-
-### Scalability
-- Go adapter buffers handle 10,000+ telemetry messages/second
-- MongoDB Atlas scales horizontally
-- Async propagation doesn't block API requests
-- Priority-based updates ensure latest data always wins
-
----
-
-## 🎯 Hackathon Compliance
-
-✅ **ECI J2000 Reference Frame**  
-✅ **J2 Perturbation** (μ=398600.4418, R_E=6378.137, J₂=1.08263×10⁻³)  
-✅ **RK4 Integration** with adaptive sub-stepping  
-✅ **Collision Detection** with 100m threshold  
-✅ **Real-time Visualization** driven by database  
-✅ **High-Frequency Telemetry** ingestion  
-✅ **Autonomous Maneuver Planning** with fuel validation  
-
----
-
-## 📝 License
-
-MIT License — Use this for your own space projects! 🚀
-
----
-
-## 👥 Built With ❤️
-
-For the National Space Hackathon 2026
-
-*Making space operations accessible, one satellite at a time.*
-
----
-
-**Ready to explore?** Open http://localhost:3000 and watch the satellites dance! 🛰️✨
+- The current frontend uses the `Orbital Insight` dashboard branding while the project name is ACM.
+- Several additional markdown reports remain in the repo; this README is the primary high-level submission document.
+- The codebase contains active work-in-progress changes outside this README and timeline fix, so further cleanup should be done carefully.

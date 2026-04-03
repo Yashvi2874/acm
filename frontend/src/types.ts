@@ -8,7 +8,7 @@ export interface ConjunctionInfo {
   delta_r_tca: [number, number, number]; // relative position vector at TCA
 }
 
-export type SatelliteStatus = 'nominal' | 'warning' | 'critical';
+export type SatelliteStatus = 'nominal' | 'warning' | 'critical' | 'maneuver';
 export type ManeuverType = 'avoidance' | 'station-keeping' | 'recovery';
 export type BurnDirection = 'prograde' | 'retrograde' | 'radial' | 'anti-radial' | 'normal' | 'anti-normal';
 
@@ -20,6 +20,8 @@ export interface Satellite {
   mass_kg: number;
   pos: [number, number, number]; // ECI km
   vel: [number, number, number]; // km/s
+  nomPos?: [number, number, number]; // Nominal unperturbed ECI coords
+  nomVel?: [number, number, number]; // Nominal unperturbed velocity
   orbitRadius: number; // km from Earth center
   orbitInclination: number; // radians
   orbitPhase: number; // radians, current
@@ -61,6 +63,22 @@ export interface Maneuver {
   durationHours: number;
   deltaV: number;
   executed?: boolean;
+}
+
+export interface ManeuverHistoryLog {
+  burn_id: string;
+  satellite_id: string;
+  type: ManeuverType;
+  delta_v_kms: number;
+  fuel_burned_kg: number;
+  fuel_remaining_kg: number;
+  timestamp: string;
+  x_km: number;
+  y_km: number;
+  z_km: number;
+  vx_kms: number;
+  vy_kms: number;
+  vz_kms: number;
 }
 
 export interface ManeuverPlan {

@@ -105,161 +105,26 @@ class BackgroundPropagator:
     
     async def _propagate_and_persist(self) -> None:
         """
-        Propagate all satellites and debris, persist position updates to database.
-        
-        Flow:
-          1. Sync latest state from MongoDB
-          2. Acquire lock on simulation_state
-          3. For each satellite/debris:
-             - Propagate by PROPAGATION_INTERVAL_SECONDS using RK4+J2
-             - Update in-memory position
-             - Track if velocity changed (maneuver)
-          4. Release lock
-          5. Persist position updates to Go adapter/MongoDB
+        Trigger the full autonomous Constellation Manager pipeline.
+        This hits the simulation engine directly to perform:
+          1. Sync latest from Go Adapter
+          2. Execute due/queued maneuvers
+          3. Propagate RK4+J2
+          4. Check Station Keeping & EOL
+          5. Perform Conjunction Assessment (predict CDMs)
+          6. Schedule Autonomous Evade Burns (COLA)
+          7. Persist to MongoDB
         """
-        
-        # Sync with database first to get latest state
-        await self._sync_from_database()
-        
-        async with simulation_state.lock:
-            if not simulation_state.satellites and not simulation_state.debris:
-                logger.debug("No objects to propagate")
-                return
-            
-            t_now = simulation_state.sim_time
-            dt = PROPAGATION_INTERVAL_SECONDS
-            
-            # Collect updates for persistence
-            updates = []
-            
-            # ── Propagate satellites ────────────────────────────────────────
-            for sat_id, sat in simulation_state.satellites.items():
-                try:
-                    # RK4 propagation
-                    state_vec = sat.eci  # [x, y, z, vx, vy, vz]
-                    trajectory = propagate_rk4(state_vec, dt, RK4_SUB_STEP_MAX)
-                    
-                    if trajectory is not None and len(trajectory) > 0:
-                        new_state = trajectory[-1]
-                        
-                        # Ensure it's a list
-                        if hasattr(new_state, 'tolist'):
-                            new_state = new_state.tolist()
-                        elif not isinstance(new_state, list):
-                            new_state = list(new_state)
-                        
-                        new_pos = [float(x) for x in new_state[:3]]
-                        new_vel = [float(x) for x in new_state[3:]]
-                        
-                        # Update in-memory state
-                        sat.position = new_pos
-                        sat.velocity = new_vel
-                        sat.last_updated = t_now + timedelta(seconds=dt)
-                        
-                        # Log trajectory
-                        simulation_state.log_state(sat_id, sat.last_updated, new_state)
-                        
-                        # Track for persistence
-                        updates.append({
-                            "id": sat_id,
-                            "type": "SATELLITE",
-                            "r": {"x": new_pos[0], "y": new_pos[1], "z": new_pos[2]},
-                            "v": {"x": new_vel[0], "y": new_vel[1], "z": new_vel[2]},
-                            "fuel_kg": sat.fuel_kg,
-                            "status": sat.status,
-                            "mass_kg": sat.mass_kg,
-                        })
-                        
-                        logger.debug(f"Propagated {sat_id}: pos={new_pos}, vel={new_vel}")
-                except Exception as e:
-                    logger.error(f"Error propagating satellite {sat_id}: {e}", exc_info=True)
-            
-            # ── Propagate debris ────────────────────────────────────────────
-            for deb_id, deb in simulation_state.debris.items():
-                try:
-                    # RK4 propagation
-                    state_vec = deb.eci  # [x, y, z, vx, vy, vz]
-                    trajectory = propagate_rk4(state_vec, dt, RK4_SUB_STEP_MAX)
-                    
-                    if trajectory is not None and len(trajectory) > 0:
-                        new_state = trajectory[-1]
-                        
-                        # Ensure it's a list
-                        if hasattr(new_state, 'tolist'):
-                            new_state = new_state.tolist()
-                        elif not isinstance(new_state, list):
-                            new_state = list(new_state)
-                        
-                        new_pos = [float(x) for x in new_state[:3]]
-                        new_vel = [float(x) for x in new_state[3:]]
-                        
-                        # Update in-memory state
-                        deb.position = new_pos
-                        deb.velocity = new_vel
-                        deb.last_updated = t_now + timedelta(seconds=dt)
-                        
-                        # Log trajectory
-                        simulation_state.log_state(deb_id, deb.last_updated, new_state)
-                        
-                        # Track for persistence
-                        updates.append({
-                            "id": deb_id,
-                            "type": "DEBRIS",
-                            "r": {"x": new_pos[0], "y": new_pos[1], "z": new_pos[2]},
-                            "v": {"x": new_vel[0], "y": new_vel[1], "z": new_vel[2]},
-                        })
-                        
-                        logger.debug(f"Propagated {deb_id}: pos={new_pos}, vel={new_vel}")
-                except Exception as e:
-                    logger.error(f"Error propagating debris {deb_id}: {e}", exc_info=True)
-            
-            # Advance sim clock
-            simulation_state.sim_time += timedelta(seconds=dt)
-            logger.info(f"Propagation cycle complete: {len(updates)} objects updated, sim_time={simulation_state.sim_time}")
-        
-        # ── Persist to MongoDB via Go adapter ────────────────────────────────
-        if updates:
-            await self._persist_updates(updates)
-    
-    async def _persist_updates(self, updates: list[dict]) -> None:
-        """
-        Persist position updates to MongoDB via Go adapter.
-        
-        This is fire-and-forget; failures don't block the propagation loop.
-        """
+        from api.simulate import simulate_step, StepRequest
         try:
-            # Format updates for Go adapter /log/telemetry endpoint
-            formatted_objects = []
-            for obj in updates:
-                formatted_obj = {
-                    "id": obj["id"],
-                    "type": obj["type"],
-                    "r": obj["r"],
-                    "v": obj["v"],
-                }
-                if "fuel_kg" in obj:
-                    formatted_obj["fuel_kg"] = obj["fuel_kg"]
-                if "status" in obj:
-                    formatted_obj["status"] = obj["status"]
-                if "mass_kg" in obj:
-                    formatted_obj["mass_kg"] = obj["mass_kg"]
-                formatted_objects.append(formatted_obj)
-            
-            payload = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "objects": formatted_objects,
-            }
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.go_adapter_url}/log/telemetry",
-                    json=payload,
-                    timeout=5.0,
-                )
-                response.raise_for_status()
-                logger.info(f"✓ Persisted {len(updates)} objects to MongoDB")
+            # We bypass the HTTP layer and invoke the controller directly for performance
+            await simulate_step(StepRequest(
+                step_seconds=float(PROPAGATION_INTERVAL_SECONDS),
+                force_recompute_from_db=True
+            ))
+            logger.info(f"Autonomous ACM pipeline cycle complete (dt={PROPAGATION_INTERVAL_SECONDS}s)")
         except Exception as e:
-            logger.error(f"Failed to persist updates to MongoDB: {e}")
+            logger.error(f"Failed to execute autonomous ACM pipeline: {e}", exc_info=True)
 
 
 # Global instance

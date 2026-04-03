@@ -5,8 +5,11 @@ Units: km throughout (matches state_store convention).
 import numpy as np
 import csv
 import os
+from datetime import datetime, timezone
 
 RE_KM = 6378.137   # Earth radius (km)
+EARTH_OMEGA = 7.2921150e-5
+J2000 = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _lla_to_ecef_km(lat_deg: float, lon_deg: float, alt_km: float = 0.0) -> np.ndarray:
@@ -33,6 +36,22 @@ def _elevation_angle_deg(sat_pos_km: np.ndarray, gs_pos_km: np.ndarray) -> float
     # Clip to valid range for arcsin to avoid floating point errors
     sin_el = max(-1.0, min(1.0, sin_el))
     return float(np.degrees(np.arcsin(sin_el)))
+
+
+def _gmst(sim_time: datetime) -> float:
+    if sim_time.tzinfo is None:
+        sim_time = sim_time.replace(tzinfo=timezone.utc)
+    return EARTH_OMEGA * (sim_time - J2000).total_seconds()
+
+
+def _eci_to_ecef_km(pos_km: np.ndarray, gmst: float) -> np.ndarray:
+    c, s = np.cos(gmst), np.sin(gmst)
+    x, y, z = pos_km
+    return np.array([
+        c * x + s * y,
+        -s * x + c * y,
+        z,
+    ])
 
 
 def load_ground_stations(csv_path: str | None = None) -> list[dict]:
@@ -78,3 +97,14 @@ def visible_stations(sat_pos_km: list[float], stations: list[dict] | None = None
             visible.append(gs["id"])
             
     return visible
+
+
+def visible_stations_eci(
+    sat_pos_eci_km: list[float],
+    sim_time: datetime,
+    stations: list[dict] | None = None,
+) -> list[str]:
+    """Return IDs of visible ground stations for a satellite state expressed in ECI coordinates."""
+    gmst = _gmst(sim_time)
+    sat_ecef = _eci_to_ecef_km(np.array(sat_pos_eci_km), gmst)
+    return visible_stations(sat_ecef.tolist(), stations)
