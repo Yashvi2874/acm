@@ -6,11 +6,12 @@ Welcome to ACM! We've built a multi-service orbital operations stack designed to
 
 ![ACM dashboard](docs/screenshots/dashboard.png)
 
-## Watch It in Action
+## Project Links & Demonstration
 
-Before diving into the code, check out our demonstration video where we walk through the live dashboard and autonomous evasion features:
+Before diving into the code, check out our project report and demonstration video where we walk through the live dashboard and autonomous evasion features:
 
-👉 **[Watch the ACM Demo Video](https://www.youtube.com/watch?v=dQw4w9WgXcQ)** *(Replace with your actual video link)*
+- 📄 **[Project Report (Google Drive)](#)** *(Replace with your actual report drive link)*
+- 🎬 **[Watch the ACM Demo Video (Google Drive)](#)** *(Replace with your actual video drive link)*
 
 ## The Problem
 

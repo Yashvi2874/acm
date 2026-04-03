@@ -113,6 +113,7 @@ function atlasObjectsToSnapshot(data: { satellites: AtlasObject[]; debris: Atlas
       name: `Orbital-${index + 1}`,
       status: frontendStatus(sat.status),
       fuel: Math.max(0, Math.min(100, Math.round((sat.fuel_kg ?? 0.4) * 200))),
+      mass_kg: sat.mass_kg ?? 550.0,
       pos: [sat.r.x, sat.r.y, sat.r.z] as [number, number, number],
       vel: [sat.v.x, sat.v.y, sat.v.z] as [number, number, number],
       orbitRadius,
@@ -310,6 +311,7 @@ async function stepAndSnapshot(): Promise<SimSnapshot | null> {
           name: sat.id,
           status: frontendStatus(sat.status),
           fuel: Math.max(0, Math.min(100, Math.round(sat.fuel_kg * 2.0))),
+          mass_kg: 550.0,
           pos,
           vel,
           orbitRadius,
@@ -320,15 +322,24 @@ async function stepAndSnapshot(): Promise<SimSnapshot | null> {
           riskTarget: null,
         } as Satellite;
       }),
-      debris: visualization.debris_cloud.map((d) => ({
-        id: d[0],
-        x: d[4],
-        y: d[5],
-        z: d[6],
-        vx: d[7],
-        vy: d[8],
-        vz: d[9],
-      })),
+      debris: visualization.debris_cloud.map((d) => {
+        const [id, lat, lon, alt, px, py, pz, vx, vy, vz] = d as any;
+        const r = Math.sqrt(px * px + py * py + pz * pz);
+        const speedKms = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        return {
+          id,
+          x: px,
+          y: py,
+          z: pz,
+          vx,
+          vy,
+          vz,
+          r,
+          phase: Math.atan2(py, px),
+          speed: r > 0 ? speedKms / r : 0,
+          inclination: r > 0 ? Math.acos(pz / r) : 0,
+        };
+      }),
 
       cdm_warnings: visualization.cdm_warnings,
       sim_time: visualization.timestamp,
