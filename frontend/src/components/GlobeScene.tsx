@@ -472,14 +472,14 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       camera.lookAt(0, 0, 0);
       // Slowly rotate clouds relative to earth
       if (clouds) clouds.rotation.y += 0.00008;
-      // Tumble debris + advance orbital position
+      // Tumble debris + advance orbital position (slower motion)
       debrisMeshes.forEach(m => {
-        m.rotation.x += m.userData.rotSpeed.x;
-        m.rotation.y += m.userData.rotSpeed.y;
-        m.rotation.z += m.userData.rotSpeed.z;
+        m.rotation.x += m.userData.rotSpeed.x * 0.3;
+        m.rotation.y += m.userData.rotSpeed.y * 0.3;
+        m.rotation.z += m.userData.rotSpeed.z * 0.3;
         const o = m.userData.satOrbit;
         if (o) {
-          o.theta += o.speed;
+          o.theta += o.speed * 0.2; // Slow down debris to 20% speed
           const pos = new THREE.Vector3()
             .addScaledVector(o.p0, Math.cos(o.theta))
             .addScaledVector(o.u, Math.sin(o.theta));
@@ -537,11 +537,14 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         flareRing.scale.setScalar(1 + (1 - sc.flareProgress) * 7);
       }
 
-      // Advance satellites - FASTER ORBITAL MOTION (40x speed for visualization)
+      // Advance satellites - SLOWER ORBITAL MOTION (8x speed for better visualization)
       sc?.satGroups.forEach((group: THREE.Group) => {
         const o = group.userData.satOrbit;
         if (o) {
-          o.theta += o.speed * 40;  // 40x faster for realistic visual motion
+          // Slow down significantly when hovering over this satellite
+          const isHovered = hoveredId === group.userData.satId;
+          const speedMultiplier = isHovered ? 2 : 8; // 2x when hovered, 8x normal
+          o.theta += o.speed * speedMultiplier;
           const pos = new THREE.Vector3()
             .addScaledVector(o.p0, Math.cos(o.theta))
             .addScaledVector(o.u, Math.sin(o.theta));
