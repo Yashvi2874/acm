@@ -3,8 +3,11 @@ import type { Satellite, Maneuver, ConjunctionInfo } from '../types';
 
 interface Props {
   satellite: Satellite | null;
+  groundStation?: { id: string; name: string; lat: number; lon: number; altitudeKm?: number; min_angle_deg?: number; } | null;
+  satellitesInCone?: Satellite[];
   maneuvers: Maneuver[];
   onPlanManeuver: () => void;
+  onClose: () => void;
 }
 
 const STATUS_COLOR = { nominal: 'var(--green)', warning: 'var(--amber)', critical: 'var(--red)' };
@@ -13,8 +16,8 @@ const TYPE_COLOR: Record<string, string> = {
   avoidance: '#ff3b3b', 'station-keeping': '#00d4ff', recovery: '#00ff88',
 };
 
-export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Props) {
-  if (!satellite) {
+export default function DetailPanel({ satellite, groundStation, satellitesInCone, maneuvers, onPlanManeuver, onClose }: Props) {
+  if (!satellite && !groundStation) {
     return (
       <div style={{
         width: 280, background: 'var(--bg-panel)', borderLeft: '1px solid var(--border)',
@@ -28,13 +31,49 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
           <line x1="4" y1="24" x2="44" y2="24" stroke="var(--cyan)" strokeWidth="1" opacity="0.5" />
         </svg>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', letterSpacing: 2 }}>
-          SELECT SATELLITE
+          SELECT AN OBJECT
         </span>
       </div>
     );
   }
 
-  const sat = satellite;
+  if (!satellite && groundStation) {
+    return (
+      <div className="detail-panel" style={{ width: '100%', height: '100%', background: 'var(--bg-panel)', backdropFilter: 'blur(12px)', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+        <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: 'var(--cyan)' }}>{groundStation.id}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.06)', borderRadius: 3, padding: '2px 8px' }}>GROUND STATION</span>
+            </div>
+            <button onClick={onClose} style={{
+              background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer',
+              fontSize: 14, padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>✕</button>
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>{groundStation.name}</div>
+        </div>
+        <div style={{ padding: '12px 16px' }}>
+          <div style={{ marginBottom: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}><strong>Latitude:</strong> {groundStation.lat.toFixed(4)}°</div>
+          <div style={{ marginBottom: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}><strong>Longitude:</strong> {groundStation.lon.toFixed(4)}°</div>
+          <div style={{ marginBottom: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}><strong>Altitude:</strong> {(groundStation.altitudeKm ?? 0).toFixed(2)} km</div>
+          <div style={{ marginBottom: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}><strong>Min Elevation:</strong> {(groundStation.min_angle_deg ?? 0).toFixed(0)}°</div>
+          <div style={{ marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>Cone half-angle: {(90 - (groundStation.min_angle_deg ?? 0)).toFixed(1)}°</div>
+          <div style={{ marginTop: 10, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>
+            Satellites in line-of-sight: {satellitesInCone?.length ?? 0}
+            {satellitesInCone && satellitesInCone.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 10, color: 'var(--text-secondary)', maxHeight: 120, overflowY: 'auto' }}>
+                {satellitesInCone.slice(0, 10).map(s => <div key={s.id}>{s.id} ({s.name})</div>)}
+                {satellitesInCone.length > 10 && <div>... and {satellitesInCone.length - 10} more</div>}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const sat = satellite!;
   const color = STATUS_COLOR[sat.status];
   const fuelColor = sat.fuel < 20 ? 'var(--red)' : sat.fuel < 50 ? 'var(--amber)' : 'var(--green)';
   const satManeuvers = maneuvers.filter(m => m.satelliteId === sat.id);
@@ -68,11 +107,17 @@ export default function DetailPanel({ satellite, maneuvers, onPlanManeuver }: Pr
       {/* Header */}
       <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: 'var(--cyan)' }}>{sat.id}</span>
-          <span style={{
-            fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1, padding: '2px 8px',
-            borderRadius: 3, color, background: STATUS_BG[sat.status], border: `1px solid ${color}`,
-          }}>{sat.status.toUpperCase()}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: 'var(--cyan)' }}>{sat.id}</span>
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1, padding: '2px 8px',
+              borderRadius: 3, color, background: STATUS_BG[sat.status], border: `1px solid ${color}`,
+            }}>{sat.status.toUpperCase()}</span>
+          </div>
+          <button onClick={onClose} style={{
+            background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer',
+            fontSize: 14, padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}>✕</button>
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', marginBottom: 10 }}>{sat.name}</div>
 

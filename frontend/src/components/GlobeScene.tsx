@@ -8,10 +8,11 @@ interface Props {
   groundStations: GroundStation[];
   simTime: string;
   selectedId: string | null;
+  selectedType: 'satellite' | 'station' | null;
   hoveredId: string | null;
   maneuverPlan: ManeuverPlan | null;
   flaringId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, type: 'satellite' | 'station') => void;
   onHover: (id: string | null, x: number, y: number) => void;
   tick: number;
 }
@@ -36,6 +37,27 @@ function latLonToEcefScene(lat: number, lon: number, radiusKm = EARTH_RADIUS_KM 
   const z = radiusKm * Math.sin(phi) * Math.sin(theta);
   const y = radiusKm * Math.cos(phi);
   return toScene(x, y, z);
+}
+
+function isSatelliteInStationCone(station: GroundStation, satScenePos: THREE.Vector3, minAngleDeg: number) {
+  const stationScenePos = latLonToEcefScene(station.lat, station.lon, EARTH_RADIUS_KM + (station.altitudeKm ?? 0));
+  const direction = new THREE.Vector3().subVectors(satScenePos, stationScenePos).normalize();
+  const zenith = stationScenePos.clone().normalize();
+
+  const halfAngleRad = THREE.MathUtils.degToRad(90 - minAngleDeg);
+  const cosThreshold = Math.cos(halfAngleRad);
+  const cosAngle = direction.dot(zenith);
+  if (cosAngle < cosThreshold) return false;
+
+  // Earth occlusion check (stars fall inside Earth sphere)
+  const d = new THREE.Vector3().subVectors(satScenePos, stationScenePos);
+  const t0 = -stationScenePos.dot(d) / d.dot(d);
+  if (t0 > 0 && t0 < 1) {
+    const closest = stationScenePos.clone().addScaledVector(d, t0);
+    if (closest.length() < EARTH_RADIUS_KM * SCALE) return false;
+  }
+
+  return true;
 }
 
 function gmstRadians(simTime: string) {
@@ -126,7 +148,7 @@ function createExhaustSystem(scene: THREE.Scene) {
   return { points, geo, particles };
 }
 
-export default function GlobeScene({ satellites, debris, groundStations, simTime, selectedId, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
+export default function GlobeScene({ satellites, debris, groundStations, simTime, selectedId, selectedType, hoveredId, maneuverPlan, flaringId, onSelect, onHover, tick }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<{
     renderer: THREE.WebGLRenderer;
@@ -136,6 +158,8 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     satHitMeshes: Map<string, THREE.Mesh>;
     debrisMeshes: THREE.Mesh[];
     orbitLines: Map<string, THREE.Line>;
+    stationHitMeshes: Map<string, THREE.Mesh>;
+    stationCones: Map<string, THREE.Mesh>;
     ghostOrbit: THREE.Line | null;
     flareRing: THREE.Mesh;
     flareProgress: number;
@@ -192,7 +216,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
 
     // Load NASA Blue Marble textures from CDN with CORS handling
     const BASE = 'https://unpkg.com/three@0.160.0/examples/textures/planets';
-    
+
     // Helper to load textures with error handling
     const loadTexture = (url: string, onLoad: (tex: THREE.Texture) => void) => {
       loader.load(
@@ -202,7 +226,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         (err) => console.warn(`Texture load failed: ${url}`, err) // onError - silent fallback
       );
     };
-    
+
     loadTexture(`${BASE}/earth_atmos_2048.jpg`, tex => {
       earthMat.map = tex;
       earthMat.color.set(0xffffff);
@@ -306,16 +330,43 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       earthGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), gridMaterial));
     }
 
+    const stationHitMeshes = new Map<string, THREE.Mesh>();
+    const stationCones = new Map<string, THREE.Mesh>();
+
     groundStations.forEach((station) => {
-      const anchor = latLonToEcefScene(station.lat, station.lon, EARTH_RADIUS_KM + 10);
+      const anchor = latLonToEcefScene(station.lat, station.lon, EARTH_RADIUS_KM + (station.altitudeKm ?? 10));
       const normal = anchor.clone().normalize();
       const marker = new THREE.Mesh(
-        new THREE.BoxGeometry(0.42, 0.22, 0.08),
-        new THREE.MeshBasicMaterial({ color: 0xffffff })
+        new THREE.BoxGeometry(0.45, 0.25, 0.10),
+        new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0x00ff88, emissiveIntensity: 0.2, shininess: 30 })
       );
       marker.position.copy(anchor);
       marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+      marker.userData.stationId = station.id;
       stationGroup.add(marker);
+      stationHitMeshes.set(station.id, marker);
+
+      const minElevation = station.min_angle_deg ?? 10;
+      const halfAngle = 90 - minElevation;
+      const coneHeightKm = 800;
+      const coneRadiusKm = coneHeightKm * Math.tan(THREE.MathUtils.degToRad(halfAngle));
+      const coneGeo = new THREE.ConeGeometry(coneRadiusKm * SCALE, coneHeightKm * SCALE, 64, 1, true);
+      coneGeo.translate(0, -coneHeightKm * SCALE / 2, 0); // apex at origin
+      const coneMat = new THREE.MeshBasicMaterial({
+        color: 0x00ff88,
+        transparent: true,
+        opacity: 0.15,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const cone = new THREE.Mesh(coneGeo, coneMat);
+      cone.position.copy(anchor);
+      const axis = new THREE.Vector3(0, -1, 0);
+      const target = normal.clone();
+      cone.quaternion.setFromUnitVectors(axis, target);
+      cone.visible = false;
+      stationGroup.add(cone);
+      stationCones.set(station.id, cone);
     });
 
     // Lights
@@ -349,19 +400,19 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         shininess: 40,
         flatShading: true,
       }));
-      
+
       const p = new THREE.Vector3(d.x, d.y, d.z);
       const v = new THREE.Vector3(d.vx, d.vy, d.vz);
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
-      
+
       mesh.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
-      
+
       mesh.position.copy(toScene(d.x, d.y, d.z));
       mesh.rotation.set(rand() * Math.PI * 2, rand() * Math.PI * 2, rand() * Math.PI * 2);
       mesh.userData.rotSpeed = { x: (rand() - 0.5) * 0.02, y: (rand() - 0.5) * 0.02, z: (rand() - 0.5) * 0.02 };
-      
+
       scene.add(mesh);
       debrisMeshes.push(mesh);
     });
@@ -436,16 +487,25 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const rect = mount.getBoundingClientRect();
       mouse.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(mouse, camera);
-      const hits = raycaster.intersectObjects(Array.from(satHitMeshes.values()));
-      if (hits.length > 0) onSelect(hits[0].object.userData.satId);
+      const allPickables = [...Array.from(satHitMeshes.values()), ...Array.from(stationHitMeshes.values())];
+      const hits = raycaster.intersectObjects(allPickables);
+      if (hits.length > 0) {
+        const obj = hits[0].object as any;
+        if (obj.userData.satId) onSelect(obj.userData.satId, 'satellite');
+        else if (obj.userData.stationId) onSelect(obj.userData.stationId, 'station');
+      }
     };
     const onMouseMoveHover = (e: MouseEvent) => {
       const rect = mount.getBoundingClientRect();
       mouse.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(mouse, camera);
-      const hits = raycaster.intersectObjects(Array.from(satHitMeshes.values()));
-      if (hits.length > 0) onHover(hits[0].object.userData.satId, e.clientX, e.clientY);
-      else onHover(null, 0, 0);
+      const allPickables = [...Array.from(satHitMeshes.values()), ...Array.from(stationHitMeshes.values())];
+      const hits = raycaster.intersectObjects(allPickables);
+      if (hits.length > 0) {
+        const obj = hits[0].object as any;
+        if (obj.userData.satId) onHover(obj.userData.satId, e.clientX, e.clientY);
+        else if (obj.userData.stationId) onHover(obj.userData.stationId, e.clientX, e.clientY);
+      } else onHover(null, 0, 0);
     };
     mount.addEventListener('click', onClick);
     mount.addEventListener('mousemove', onMouseMoveHover);
@@ -537,7 +597,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
           const newPos = toScene(pos.x, pos.y, pos.z);
           group.position.copy(newPos);
           group.lookAt(0, 0, 0);
-          
+
           const hitMesh = sc?.satHitMeshes.get(group.userData.satId);
           if (hitMesh) hitMesh.position.copy(newPos);
         }
@@ -549,6 +609,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
 
     sceneRef.current = {
       renderer, scene, camera, satGroups, satHitMeshes, debrisMeshes, orbitLines,
+      stationHitMeshes, stationCones,
       ghostOrbit: ghostOrbitLine, flareRing, flareProgress: 0,
       exhaust, exhaustActive: false,
       exhaustOrigin: new THREE.Vector3(), exhaustDir: new THREE.Vector3(1, 0, 0),
@@ -585,6 +646,24 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     s.earthGroup.rotation.y = subtleRotation;
   }, [simTime]);
 
+  useEffect(() => {
+    const s = sceneRef.current;
+    if (!s) return;
+
+    s.stationCones.forEach((cone, stationId) => {
+      cone.visible = selectedType === 'station' && selectedId === stationId;
+    });
+
+    s.stationHitMeshes.forEach((marker, stationId) => {
+      const isActive = selectedType === 'station' && selectedId === stationId;
+      const mat = marker.material as THREE.MeshPhongMaterial;
+      mat.color.setHex(isActive ? 0x00ff88 : 0xffffff);
+      mat.emissive.setHex(isActive ? 0x00ff88 : 0x001122);
+      mat.emissiveIntensity = isActive ? 0.8 : 0.2;
+      marker.scale.setScalar(isActive ? 1.25 : 1);
+    });
+  }, [selectedId, selectedType]);
+
   // Update positions + visuals each tick
   useEffect(() => {
     const s = sceneRef.current;
@@ -593,25 +672,37 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
       const group = s.satGroups.get(sat.id);
       const hitMesh = s.satHitMeshes.get(sat.id);
       if (!group || !hitMesh) return;
-      
+
       // Resync orbital parameters from backend fetching every 60s
       const p = new THREE.Vector3(...sat.pos);
       const v = new THREE.Vector3(...sat.vel);
       const r_mag = p.length();
       const n = new THREE.Vector3().crossVectors(p, v).normalize();
       const u = new THREE.Vector3().crossVectors(n, p).normalize().multiplyScalar(r_mag);
-      
+
       group.userData.satOrbit = { p0: p, u: u, speed: (v.length() / r_mag) * 0.016 * 40, theta: 0 };
-      
+
       const pos = toScene(...sat.pos);
-      
+
       const isSelected = sat.id === selectedId;
       const isHovered = sat.id === hoveredId;
       const isFlaring = sat.id === flaringId;
-      const scale = isFlaring ? 1.6 : isSelected ? 1.4 : isHovered ? 1.2 : 1;
+      const isDead = sat.fuel <= 5;
+
+      group.visible = !isDead;
+      hitMesh.visible = !isDead;
+
+      let isInStationCone = false;
+      if (selectedType === 'station') {
+        const station = groundStations.find(gs => gs.id === selectedId);
+        if (station && station.min_angle_deg !== undefined) {
+          isInStationCone = isSatelliteInStationCone(station, pos, station.min_angle_deg);
+        }
+      }
+      const scale = isFlaring ? 1.6 : isSelected ? 1.4 : isHovered ? 1.2 : isInStationCone ? 1.15 : 1;
       group.scale.setScalar(scale);
       hitMesh.scale.setScalar(scale);
-      
+
       // Update body material
       group.children.forEach(child => {
         if (child instanceof THREE.Mesh && (child as THREE.Mesh).userData.isBody) {
@@ -621,10 +712,11 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
           mat.emissiveIntensity = isFlaring ? 1.2 : isSelected ? 0.7 : isHovered ? 0.5 : 0.25;
         }
       });
-      
+
       // Update orbit line visibility and geometry
       const line = s.orbitLines.get(sat.id);
       if (line) {
+        line.visible = !isDead;
         (line.material as THREE.LineBasicMaterial).opacity = isSelected ? 0.85 : isHovered ? 0.65 : 0.35;
         const pts: THREE.Vector3[] = [];
         for (let a = 0; a <= 360; a += 3) {
@@ -635,7 +727,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         line.geometry.setFromPoints(pts);
         line.quaternion.identity();
       }
-      
+
       if (isFlaring) {
         s.exhaustOrigin.copy(pos);
         s.exhaustDir.copy(pos).normalize();
@@ -660,7 +752,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     const n = new THREE.Vector3().crossVectors(p, v).normalize();
     const u = new THREE.Vector3().crossVectors(n, p).normalize();
     const p_unit = p.clone().normalize();
-    
+
     const pts: THREE.Vector3[] = [];
     for (let a = 0; a <= 360; a += 3) {
       const rad = (a * Math.PI) / 180;
@@ -669,7 +761,7 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
     }
     s.ghostOrbit.geometry.setFromPoints(pts);
     s.ghostOrbit.quaternion.identity();
-    
+
     mat.color.setHex(maneuverPlan.type === 'avoidance' ? 0xff3b3b : maneuverPlan.type === 'recovery' ? 0x00ff88 : 0xffffff);
     mat.opacity = 0.7;
   }, [maneuverPlan, satellites]);

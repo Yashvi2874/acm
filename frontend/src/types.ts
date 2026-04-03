@@ -45,6 +45,8 @@ export interface GroundStation {
   name: string;
   lat: number;
   lon: number;
+  altitudeKm?: number;
+  min_angle_deg?: number;
 }
 
 export interface Maneuver {
@@ -71,5 +73,6 @@ export interface CdmWarning {
   object_2_id: string;
   tca: string;
   miss_distance_km: number;
+  probability_of_collision?: number;
   severity: 'WARNING' | 'CRITICAL';
 }

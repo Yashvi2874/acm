@@ -92,8 +92,9 @@ export default function SatelliteList({ satellites, selectedId, onSelect }: Prop
 }
 
 function SatRow({ sat, selected, onSelect }: { sat: Satellite; selected: boolean; onSelect: (id: string) => void }) {
-  const color = STATUS_COLOR[sat.status];
-  const fuelColor = sat.fuel < 20 ? 'var(--red)' : sat.fuel < 50 ? 'var(--amber)' : 'var(--green)';
+  const isDead = sat.fuel <= 5;
+  const color = isDead ? 'var(--red)' : STATUS_COLOR[sat.status];
+  const fuelColor = isDead ? 'var(--red)' : sat.fuel < 20 ? 'var(--red)' : sat.fuel < 50 ? 'var(--amber)' : 'var(--green)';
 
   return (
     <div
@@ -120,17 +121,17 @@ function SatRow({ sat, selected, onSelect }: { sat: Satellite; selected: boolean
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 8px ${color}`, flexShrink: 0 }} />
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: selected ? 'var(--cyan)' : 'var(--text-primary)' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: isDead ? 'var(--red)' : selected ? 'var(--cyan)' : 'var(--text-primary)' }}>
             {sat.id}
           </span>
         </div>
         <span style={{
           fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: 1,
           color, padding: '2px 6px', borderRadius: 3,
-          background: sat.status === 'critical' ? 'var(--red-dim)' : sat.status === 'warning' ? 'var(--amber-dim)' : 'var(--green-dim)',
+          background: isDead ? 'var(--red-dim)' : sat.status === 'critical' ? 'var(--red-dim)' : sat.status === 'warning' ? 'var(--amber-dim)' : 'var(--green-dim)',
           border: `1px solid ${color}40`,
         }}>
-          {STATUS_LABEL[sat.status]}
+          {isDead ? 'DEAD' : STATUS_LABEL[sat.status]}
         </span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

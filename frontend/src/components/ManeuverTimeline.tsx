@@ -29,6 +29,7 @@ interface Props {
   satellites: Satellite[];
   simTime: string;
   timeWindowMinutes?: number;
+  onClose?: () => void;
 }
 
 // ============================================================================
@@ -302,7 +303,8 @@ function generateManeuverEvents(satellites: Satellite[], simTime: string, window
 export default function ManeuverTimeline({
   satellites,
   simTime,
-  timeWindowMinutes = 120,
+  timeWindowMinutes = 1440,
+  onClose,
 }: Props) {
   const [hoveredEvent, setHoveredEvent] = useState<ManeuverEvent | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -336,8 +338,9 @@ export default function ManeuverTimeline({
   // Generate time axis markers
   const timeMarkers = useMemo(() => {
     const markers = [];
-    const step = windowMs / 12; // 12 markers
-    for (let i = 0; i <= 12; i++) {
+    const numMarkers = timeWindowMinutes === 1440 ? 24 : 12;
+    const step = windowMs / numMarkers;
+    for (let i = 0; i <= numMarkers; i++) {
       const time = new Date(windowStart.getTime() + i * step);
       markers.push({
         time,
@@ -345,7 +348,7 @@ export default function ManeuverTimeline({
       });
     }
     return markers;
-  }, [windowStart, windowMs]);
+  }, [windowStart, windowMs, timeWindowMinutes]);
 
   const handleMouseMove = (e: React.MouseEvent, event: ManeuverEvent) => {
     setHoveredEvent(event);
@@ -356,9 +359,22 @@ export default function ManeuverTimeline({
     <div style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
-        <div>📅 Maneuver Timeline (Gantt Scheduler)</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {onClose && (
+            <button onClick={onClose} style={{
+              background: 'transparent', border: '1px solid var(--cyan)', 
+              color: 'var(--cyan)', borderRadius: 4, padding: '4px 12px',
+              fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 'bold',
+              cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+              transition: 'all 0.15s'
+            }}>
+              ← BACK
+            </button>
+          )}
+          <div>📅 Maneuver Timeline (Gantt Scheduler)</div>
+        </div>
         <div style={{ fontSize: '11px', color: '#888888' }}>
-          Window: {timeWindowMinutes} min | Current: {now.toISOString().split('T')[1].split('.')[0]}
+          Window: {timeWindowMinutes / 60} hrs | Current: {now.toISOString().split('T')[1].split('.')[0]}
         </div>
       </div>
 
@@ -369,8 +385,8 @@ export default function ManeuverTimeline({
             key={i}
             style={{
               ...styles.timeMarker,
-              left: `${(i / 12) * 100}%`,
-              width: `${100 / 12}%`,
+              left: `${(i / (timeWindowMinutes === 1440 ? 24 : 12)) * 100}%`,
+              width: `${100 / (timeWindowMinutes === 1440 ? 24 : 12)}%`,
             }}
           >
             {marker.label}
