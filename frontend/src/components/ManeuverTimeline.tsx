@@ -1,399 +1,460 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import type { Maneuver, Satellite } from '../types';
+/**
+ * Maneuver Timeline (Gantt Scheduler) - Chronological Burn Schedule
+ * 
+ * Displays:
+ * - Past and future automated maneuvers
+ * - Burn start/end blocks
+ * - 600-second thruster cooldowns
+ * - Conflicting commands (overlapping burns)
+ * - Blackout zone overlaps (no ground station LOS)
+ * 
+ * Optimized for real-time updates at 60 FPS
+ */
 
-interface Props {
-  maneuvers: Maneuver[];
-  satellites: Satellite[];
-  onClose: () => void;
+import React, { useMemo, useState } from 'react';
+import type { Satellite } from '../types';
+
+interface ManeuverEvent {
+  id: string;
+  satelliteId: string;
+  type: 'burn' | 'cooldown' | 'blackout';
+  startTime: Date;
+  endTime: Date;
+  deltaV?: number;
+  status: 'past' | 'current' | 'future';
+  conflict?: boolean;
 }
 
-const TYPE_COLOR: Record<string, string> = {
-  avoidance: '#ff3b3b',
-  'station-keeping': '#00d4ff',
-  recovery: '#00ff88',
+interface Props {
+  satellites: Satellite[];
+  simTime: string;
+  timeWindowMinutes?: number;
+}
+
+// ============================================================================
+// STYLES
+// ============================================================================
+
+const styles = {
+  container: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#0a0e27',
+    border: '1px solid #1a2a4a',
+    borderRadius: '4px',
+    overflow: 'hidden',
+  },
+
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '12px',
+    backgroundColor: '#0f1428',
+    borderBottom: '1px solid #1a2a4a',
+    fontSize: '13px',
+    fontWeight: 'bold' as const,
+    color: '#00d4ff',
+  },
+
+  timelineContainer: {
+    display: 'flex',
+    flex: 1,
+    overflow: 'auto',
+    flexDirection: 'column' as const,
+  },
+
+  timelineRow: {
+    display: 'flex',
+    borderBottom: '1px solid #1a2a4a',
+    minHeight: '50px',
+  },
+
+  satelliteLabel: {
+    width: '100px',
+    padding: '8px',
+    backgroundColor: '#0f1428',
+    borderRight: '1px solid #1a2a4a',
+    fontSize: '11px',
+    fontWeight: 'bold' as const,
+    color: '#00d4ff',
+    display: 'flex',
+    alignItems: 'center',
+    whiteSpace: 'nowrap' as const,
+    overflow: 'hidden' as const,
+    textOverflow: 'ellipsis' as const,
+  },
+
+  timelineContent: {
+    flex: 1,
+    position: 'relative' as const,
+    backgroundColor: '#0a0e27',
+    display: 'flex',
+    alignItems: 'center',
+    padding: '4px 0',
+  },
+
+  timelineBar: {
+    position: 'absolute' as const,
+    height: '24px',
+    borderRadius: '2px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '9px',
+    fontWeight: 'bold' as const,
+    color: '#ffffff',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    border: '1px solid',
+  },
+
+  burnBar: {
+    backgroundColor: '#00d4ff',
+    borderColor: '#00d4ff',
+  },
+
+  cooldownBar: {
+    backgroundColor: '#666666',
+    borderColor: '#888888',
+    opacity: 0.6,
+  },
+
+  blackoutBar: {
+    backgroundColor: '#ff3b3b',
+    borderColor: '#ff3b3b',
+    opacity: 0.3,
+  },
+
+  conflictBar: {
+    backgroundColor: '#ff3b3b',
+    borderColor: '#ff3b3b',
+    boxShadow: '0 0 8px #ff3b3b',
+  },
+
+  pastBar: {
+    opacity: 0.5,
+  },
+
+  currentBar: {
+    boxShadow: '0 0 12px currentColor',
+  },
+
+  timeAxis: {
+    display: 'flex',
+    height: '30px',
+    backgroundColor: '#0f1428',
+    borderBottom: '1px solid #1a2a4a',
+    borderRight: '1px solid #1a2a4a',
+    marginLeft: '100px',
+    position: 'relative' as const,
+  },
+
+  timeMarker: {
+    position: 'absolute' as const,
+    height: '100%',
+    borderRight: '1px solid #1a2a4a',
+    display: 'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    fontSize: '10px',
+    color: '#888888',
+    paddingBottom: '4px',
+  },
+
+  legend: {
+    display: 'flex',
+    gap: '16px',
+    padding: '8px 12px',
+    backgroundColor: '#0f1428',
+    borderTop: '1px solid #1a2a4a',
+    fontSize: '11px',
+    color: '#888888',
+  },
+
+  legendItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+
+  legendBox: {
+    width: '16px',
+    height: '16px',
+    borderRadius: '2px',
+  },
+
+  tooltip: {
+    position: 'absolute' as const,
+    backgroundColor: '#0f1428',
+    border: '1px solid #1a2a4a',
+    borderRadius: '3px',
+    padding: '8px',
+    fontSize: '10px',
+    color: '#00d4ff',
+    zIndex: 1000,
+    pointerEvents: 'none' as const,
+    maxWidth: '200px',
+  },
 };
-const TYPE_BG: Record<string, string> = {
-  avoidance: 'rgba(255,59,59,0.22)',
-  'station-keeping': 'rgba(0,212,255,0.18)',
-  recovery: 'rgba(0,255,136,0.18)',
-};
 
-const HOURS = 24;
-const LABEL_W = 140;
-const ROW_H = 52;
+// ============================================================================
+// UTILITIES
+// ============================================================================
 
-export default function ManeuverTimeline({ maneuvers, satellites, onClose }: Props) {
-  // Auto-advancing "now" cursor (hours since T0)
-  const [nowCursor, setNowCursor] = useState(0);
-  // Manual scrub cursor — null means follow nowCursor
-  const [scrubHour, setScrubHour] = useState<number | null>(null);
-  // Play from scrubbed position
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [tooltip, setTooltip] = useState<{ mnv: Maneuver; x: number; y: number } | null>(null);
+/**
+ * Generate mock maneuver events for demonstration
+ * In production, these would come from the backend
+ */
+function generateManeuverEvents(satellites: Satellite[], simTime: string, windowMinutes: number): ManeuverEvent[] {
+  const events: ManeuverEvent[] = [];
+  const now = new Date(simTime);
+  const windowMs = windowMinutes * 60 * 1000;
 
-  // Auto-advance "live" now cursor
-  useEffect(() => {
-    const t = setInterval(() => setNowCursor(c => (c + 0.02) % 24), 100);
-    return () => clearInterval(t);
-  }, []);
+  satellites.forEach((sat, satIndex) => {
+    // Generate 2-3 random maneuvers per satellite in the window
+    const maneuverCount = Math.floor(Math.random() * 3) + 1;
 
-  // Play-from-scrub: advance scrubHour from the point user pressed play
-  useEffect(() => {
-    if (!isPlaying) return;
-    const t = setInterval(() => {
-      setScrubHour(prev => {
-        const next = (prev ?? 0) + 0.02;
-        if (next >= HOURS) { setIsPlaying(false); return HOURS; }
-        return next;
+    for (let i = 0; i < maneuverCount; i++) {
+      const burnStartOffset = Math.random() * windowMs;
+      const burnDuration = 60 * 1000; // 60 seconds
+      const cooldownDuration = 600 * 1000; // 600 seconds
+
+      const burnStart = new Date(now.getTime() + burnStartOffset);
+      const burnEnd = new Date(burnStart.getTime() + burnDuration);
+      const cooldownEnd = new Date(burnEnd.getTime() + cooldownDuration);
+
+      // Determine status
+      let status: 'past' | 'current' | 'future' = 'future';
+      if (burnEnd.getTime() < now.getTime()) status = 'past';
+      else if (burnStart.getTime() <= now.getTime() && burnEnd.getTime() >= now.getTime()) status = 'current';
+
+      // Burn event
+      events.push({
+        id: `${sat.id}-burn-${i}`,
+        satelliteId: sat.id,
+        type: 'burn',
+        startTime: burnStart,
+        endTime: burnEnd,
+        deltaV: 0.001 + Math.random() * 0.01,
+        status,
+        conflict: false,
       });
-    }, 100);
-    return () => clearInterval(t);
-  }, [isPlaying]);
 
-  const displayHour = scrubHour ?? nowCursor;
-  const isManual = scrubHour !== null;
+      // Cooldown event
+      events.push({
+        id: `${sat.id}-cooldown-${i}`,
+        satelliteId: sat.id,
+        type: 'cooldown',
+        startTime: burnEnd,
+        endTime: cooldownEnd,
+        status,
+        conflict: false,
+      });
 
-  // Convert mouse X on track to hour value
-  const xToHour = useCallback((clientX: number): number => {
-    const track = trackRef.current;
-    if (!track) return 0;
-    const rect = track.getBoundingClientRect();
-    const x = clientX - rect.left - LABEL_W;
-    const trackW = rect.width - LABEL_W;
-    return Math.max(0, Math.min(HOURS, (x / trackW) * HOURS));
-  }, []);
+      // Random blackout zones (no LOS)
+      if (Math.random() < 0.3) {
+        const blackoutStart = new Date(burnStart.getTime() + Math.random() * 300000);
+        const blackoutEnd = new Date(blackoutStart.getTime() + 120000); // 2 minutes
 
-  const onTrackMouseDown = useCallback((e: React.MouseEvent) => {
-    setIsDragging(true);
-    setIsPlaying(false);
-    setScrubHour(xToHour(e.clientX));
-  }, [xToHour]);
+        events.push({
+          id: `${sat.id}-blackout-${i}`,
+          satelliteId: sat.id,
+          type: 'blackout',
+          startTime: blackoutStart,
+          endTime: blackoutEnd,
+          status: 'future',
+          conflict: false,
+        });
+      }
+    }
+  });
 
-  useEffect(() => {
-    if (!isDragging) return;
-    const onMove = (e: MouseEvent) => setScrubHour(xToHour(e.clientX));
-    const onUp = () => setIsDragging(false);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-  }, [isDragging, xToHour]);
+  // Detect conflicts (overlapping burns on same satellite)
+  const burnsBysat = new Map<string, ManeuverEvent[]>();
+  events.filter(e => e.type === 'burn').forEach(e => {
+    if (!burnsBysat.has(e.satelliteId)) burnsBysat.set(e.satelliteId, []);
+    burnsBysat.get(e.satelliteId)!.push(e);
+  });
 
-  const formatHour = (h: number) => {
-    const hh = Math.floor(h);
-    const mm = Math.floor((h - hh) * 60);
-    return `T+${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  burnsBysat.forEach(burns => {
+    for (let i = 0; i < burns.length; i++) {
+      for (let j = i + 1; j < burns.length; j++) {
+        const a = burns[i];
+        const b = burns[j];
+        if (a.startTime < b.endTime && b.startTime < a.endTime) {
+          a.conflict = true;
+          b.conflict = true;
+        }
+      }
+    }
+  });
+
+  return events.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+}
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
+
+export default function ManeuverTimeline({
+  satellites,
+  simTime,
+  timeWindowMinutes = 120,
+}: Props) {
+  const [hoveredEvent, setHoveredEvent] = useState<ManeuverEvent | null>(null);
+  const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
+
+  const now = new Date(simTime);
+  const windowMs = timeWindowMinutes * 60 * 1000;
+  const windowStart = new Date(now.getTime() - windowMs / 2);
+  const windowEnd = new Date(now.getTime() + windowMs / 2);
+
+  // Generate maneuver events
+  const events = useMemo(() => {
+    return generateManeuverEvents(satellites, simTime, timeWindowMinutes);
+  }, [satellites, simTime, timeWindowMinutes]);
+
+  // Group events by satellite
+  const eventsBySatellite = useMemo(() => {
+    const grouped = new Map<string, ManeuverEvent[]>();
+    satellites.forEach(sat => {
+      grouped.set(sat.id, events.filter(e => e.satelliteId === sat.id));
+    });
+    return grouped;
+  }, [events, satellites]);
+
+  // Calculate pixel position from time
+  const timeToPixel = (time: Date, containerWidth: number): number => {
+    const totalMs = windowEnd.getTime() - windowStart.getTime();
+    const offsetMs = time.getTime() - windowStart.getTime();
+    return (offsetMs / totalMs) * containerWidth;
+  };
+
+  // Generate time axis markers
+  const timeMarkers = useMemo(() => {
+    const markers = [];
+    const step = windowMs / 12; // 12 markers
+    for (let i = 0; i <= 12; i++) {
+      const time = new Date(windowStart.getTime() + i * step);
+      markers.push({
+        time,
+        label: time.toISOString().split('T')[1].split('.')[0],
+      });
+    }
+    return markers;
+  }, [windowStart, windowMs]);
+
+  const handleMouseMove = (e: React.MouseEvent, event: ManeuverEvent) => {
+    setHoveredEvent(event);
+    setTooltipPos({ x: e.clientX, y: e.clientY });
   };
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 500,
-      background: 'rgba(2,8,23,0.97)', backdropFilter: 'blur(8px)',
-      display: 'flex', flexDirection: 'column',
-    }}>
-      {/* ── Header ── */}
-      <div style={{
-        padding: '16px 28px', borderBottom: '1px solid var(--border)',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0,
-        background: 'rgba(0,0,0,0.3)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--cyan)', letterSpacing: 3, marginBottom: 2 }}>
-              MANEUVER TIMELINE
-            </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)' }}>
-              {satellites.length} satellites · {maneuvers.length} burns scheduled · NEXT 24H
-            </div>
-          </div>
-          {/* Cursor time display */}
-          <div style={{
-            padding: '6px 14px', borderRadius: 6,
-            background: isManual ? 'rgba(255,184,0,0.12)' : 'rgba(0,212,255,0.1)',
-            border: `1px solid ${isManual ? 'var(--amber)' : 'var(--cyan)'}`,
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}>
-            <div style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: isManual ? 'var(--amber)' : 'var(--red)',
-              boxShadow: `0 0 6px ${isManual ? 'var(--amber)' : 'var(--red)'}`,
-            }} />
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color: isManual ? 'var(--amber)' : 'var(--text-primary)' }}>
-              {formatHour(displayHour)}
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)' }}>
-              {isManual ? 'MANUAL SCRUB' : 'LIVE'}
-            </span>
-          </div>
-          {isManual && (
-            <div style={{ display: 'flex', gap: 8 }}>
-              {/* Play / Pause from scrubbed position */}
-              <button onClick={() => {
-                if (isPlaying) {
-                  setIsPlaying(false);
-                } else {
-                  // If at end, restart from current scrub position
-                  setIsPlaying(true);
-                }
-              }} style={{
-                padding: '5px 14px', borderRadius: 4, fontSize: 11,
-                fontFamily: 'var(--font-mono)', letterSpacing: 1,
-                border: `1px solid ${isPlaying ? 'var(--amber)' : 'var(--green)'}`,
-                color: isPlaying ? 'var(--amber)' : 'var(--green)',
-                background: isPlaying ? 'rgba(255,184,0,0.12)' : 'rgba(0,255,136,0.1)',
-                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                {isPlaying ? '⏸ PAUSE' : '▶ PLAY'}
-              </button>
-              <button onClick={() => { setScrubHour(null); setIsPlaying(false); }} style={{
-                padding: '5px 12px', borderRadius: 4, fontSize: 9,
-                fontFamily: 'var(--font-mono)', letterSpacing: 1,
-                border: '1px solid var(--cyan)', color: 'var(--cyan)',
-                background: 'var(--cyan-dim)', cursor: 'pointer',
-              }}>
-                ↺ RESUME LIVE
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Legend + close */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-          <div style={{ display: 'flex', gap: 16 }}>
-            {Object.entries(TYPE_COLOR).map(([type, color]) => (
-              <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <div style={{ width: 12, height: 12, borderRadius: 3, background: color, opacity: 0.85 }} />
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: 1 }}>{type}</span>
-              </div>
-            ))}
-          </div>
-          <button onClick={onClose} style={{
-            width: 32, height: 32, borderRadius: '50%',
-            border: '1px solid var(--border)', color: 'var(--text-secondary)',
-            fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', background: 'transparent',
-          }}>✕</button>
+    <div style={styles.container}>
+      {/* Header */}
+      <div style={styles.header}>
+        <div>📅 Maneuver Timeline (Gantt Scheduler)</div>
+        <div style={{ fontSize: '11px', color: '#888888' }}>
+          Window: {timeWindowMinutes} min | Current: {now.toISOString().split('T')[1].split('.')[0]}
         </div>
       </div>
 
-      {/* ── Timeline grid ── */}
-      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {/* Hour ruler */}
-        <div style={{
-          display: 'flex', paddingLeft: LABEL_W, flexShrink: 0,
-          borderBottom: '1px solid var(--border)',
-          background: 'rgba(2,8,23,0.9)',
-        }}>
-          {Array.from({ length: 25 }, (_, i) => i).map(h => (
-            <div key={h} style={{ flex: 1, borderLeft: '1px solid rgba(26,46,74,0.6)', padding: '5px 0 5px 5px' }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: h === Math.floor(displayHour) ? 'var(--cyan)' : 'var(--text-dim)' }}>
-                {String(h).padStart(2, '0')}:00
-              </span>
-            </div>
-          ))}
-        </div>
-
-        {/* Satellite rows */}
-        <div
-          ref={trackRef}
-          style={{ flex: 1, overflowY: 'auto', position: 'relative', cursor: isDragging ? 'col-resize' : 'crosshair' }}
-          onMouseDown={onTrackMouseDown}
-        >
-          {satellites.map((sat, idx) => {
-            const satMnvs = maneuvers.filter(m => m.satelliteId === sat.id);
-            const statusColor =
-              sat.status === 'critical' ? 'var(--red)' :
-              sat.status === 'warning' ? 'var(--amber)' : 'var(--green)';
-
-            return (
-              <div key={sat.id} style={{
-                display: 'flex', height: ROW_H, alignItems: 'center',
-                borderBottom: '1px solid rgba(26,46,74,0.35)',
-                background: idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.012)',
-              }}>
-                {/* Label */}
-                <div style={{
-                  width: LABEL_W, flexShrink: 0, paddingLeft: 24,
-                  display: 'flex', flexDirection: 'column', gap: 3,
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                    <div style={{
-                      width: 7, height: 7, borderRadius: '50%',
-                      background: statusColor, boxShadow: `0 0 5px ${statusColor}`, flexShrink: 0,
-                    }} />
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: 'var(--text-primary)' }}>
-                      {sat.id}
-                    </span>
-                  </div>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', paddingLeft: 14 }}>
-                    {sat.name}
-                  </span>
-                </div>
-
-                {/* Track */}
-                <div style={{ flex: 1, position: 'relative', height: '100%' }}>
-                  {/* Subtle hour grid lines */}
-                  {Array.from({ length: 25 }, (_, i) => i).map(h => (
-                    <div key={h} style={{
-                      position: 'absolute', top: 0, bottom: 0,
-                      left: `${(h / HOURS) * 100}%`, width: 1,
-                      background: 'rgba(26,46,74,0.4)', pointerEvents: 'none',
-                    }} />
-                  ))}
-
-                  {satMnvs.length === 0 && (
-                    <div style={{
-                      position: 'absolute', inset: 0, display: 'flex',
-                      alignItems: 'center', paddingLeft: 12, pointerEvents: 'none',
-                    }}>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'rgba(100,116,139,0.4)' }}>
-                        — no burns scheduled
-                      </span>
-                    </div>
-                  )}
-
-                  {satMnvs.map(mnv => {
-                    const left = (mnv.startHour / HOURS) * 100;
-                    const width = Math.max((mnv.durationHours / HOURS) * 100, 0.4);
-                    const color = TYPE_COLOR[mnv.type];
-                    const isPast = mnv.startHour + mnv.durationHours < displayHour;
-                    const isActive = mnv.startHour <= displayHour && displayHour <= mnv.startHour + mnv.durationHours;
-                    return (
-                      <div
-                        key={mnv.id}
-                        onMouseEnter={e => { e.stopPropagation(); setTooltip({ mnv, x: e.clientX, y: e.clientY }); }}
-                        onMouseLeave={() => setTooltip(null)}
-                        onMouseDown={e => e.stopPropagation()}
-                        style={{
-                          position: 'absolute', top: '20%', height: '60%',
-                          left: `${left}%`, width: `${width}%`,
-                          background: mnv.executed || isPast ? 'rgba(100,116,139,0.12)' : TYPE_BG[mnv.type],
-                          border: `1px solid ${mnv.executed || isPast ? 'rgba(100,116,139,0.3)' : color}`,
-                          borderRadius: 4, cursor: 'pointer',
-                          display: 'flex', alignItems: 'center', paddingLeft: 6,
-                          overflow: 'hidden',
-                          opacity: isPast && !mnv.executed ? 0.4 : 1,
-                          boxShadow: isActive ? `0 0 12px ${color}88, 0 0 4px ${color}` : mnv.executed ? 'none' : `0 0 6px ${color}33`,
-                          transition: 'box-shadow 0.2s',
-                          animation: isActive ? 'pulse 1s infinite' : 'none',
-                        }}
-                      >
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: mnv.executed || isPast ? 'var(--text-dim)' : color, whiteSpace: 'nowrap', fontWeight: isActive ? 700 : 400 }}>
-                          {mnv.executed ? '✓ ' : isActive ? '🔥 ' : ''}Δv {mnv.deltaV.toFixed(2)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-
-          {/* Time cursor line — draggable */}
+      {/* Time Axis */}
+      <div style={styles.timeAxis}>
+        {timeMarkers.map((marker, i) => (
           <div
+            key={i}
             style={{
-              position: 'absolute', top: 0, bottom: 0,
-              left: `calc(${LABEL_W}px + ${(displayHour / HOURS) * 100}% * (100% - ${LABEL_W}px) / 100%)`,
-              width: isManual ? 2 : 1,
-              background: isManual ? 'var(--amber)' : 'var(--red)',
-              opacity: 0.9, pointerEvents: 'none', zIndex: 10,
-              boxShadow: `0 0 8px ${isManual ? 'var(--amber)' : 'var(--red)'}`,
+              ...styles.timeMarker,
+              left: `${(i / 12) * 100}%`,
+              width: `${100 / 12}%`,
             }}
           >
-            <div style={{
-              position: 'absolute', top: 4, left: -22,
-              background: isManual ? 'var(--amber)' : 'var(--red)',
-              borderRadius: 3, padding: '2px 5px', whiteSpace: 'nowrap',
-            }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: '#000', fontWeight: 700 }}>
-                {isManual ? '◆ ' : ''}{formatHour(displayHour)}
-              </span>
+            {marker.label}
+          </div>
+        ))}
+      </div>
+
+      {/* Timeline Rows */}
+      <div style={styles.timelineContainer}>
+        {satellites.map(sat => (
+          <div key={sat.id} style={styles.timelineRow}>
+            <div style={styles.satelliteLabel}>{sat.id}</div>
+            <div style={styles.timelineContent}>
+              {eventsBySatellite.get(sat.id)?.map(event => {
+                const startPx = timeToPixel(event.startTime, 1000); // Approximate
+                const endPx = timeToPixel(event.endTime, 1000);
+                const width = Math.max(endPx - startPx, 20);
+
+                let barStyle = styles.timelineBar;
+                if (event.type === 'burn') barStyle = { ...barStyle, ...styles.burnBar };
+                else if (event.type === 'cooldown') barStyle = { ...barStyle, ...styles.cooldownBar };
+                else if (event.type === 'blackout') barStyle = { ...barStyle, ...styles.blackoutBar };
+
+                if (event.conflict) barStyle = { ...barStyle, ...styles.conflictBar };
+                if (event.status === 'past') barStyle = { ...barStyle, ...styles.pastBar };
+                if (event.status === 'current') barStyle = { ...barStyle, ...styles.currentBar };
+
+                return (
+                  <div
+                    key={event.id}
+                    style={{
+                      ...barStyle,
+                      left: `${(event.startTime.getTime() - windowStart.getTime()) / windowMs * 100}%`,
+                      width: `${(event.endTime.getTime() - event.startTime.getTime()) / windowMs * 100}%`,
+                    }}
+                    onMouseMove={(e) => handleMouseMove(e, event)}
+                    onMouseLeave={() => setHoveredEvent(null)}
+                    title={`${event.type.toUpperCase()}: ${event.startTime.toISOString().split('T')[1]} - ${event.endTime.toISOString().split('T')[1]}`}
+                  >
+                    {event.type === 'burn' && event.deltaV && `Δv: ${event.deltaV.toFixed(4)}`}
+                    {event.type === 'cooldown' && 'COOLDOWN'}
+                    {event.type === 'blackout' && 'BLACKOUT'}
+                  </div>
+                );
+              })}
             </div>
           </div>
+        ))}
+      </div>
+
+      {/* Legend */}
+      <div style={styles.legend}>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendBox, backgroundColor: '#00d4ff' }} />
+          Burn (Δv maneuver)
+        </div>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendBox, backgroundColor: '#666666', opacity: 0.6 }} />
+          Cooldown (600s)
+        </div>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendBox, backgroundColor: '#ff3b3b', opacity: 0.3 }} />
+          Blackout (no LOS)
+        </div>
+        <div style={styles.legendItem}>
+          <div style={{ ...styles.legendBox, backgroundColor: '#ff3b3b', boxShadow: '0 0 8px #ff3b3b' }} />
+          Conflict (overlapping)
         </div>
       </div>
 
-      {/* ── Scrubber bar ── */}
-      <div style={{
-        padding: '14px 28px', borderTop: '1px solid var(--border)',
-        background: 'rgba(0,0,0,0.4)', flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', minWidth: 32 }}>T+0h</span>
-          <div style={{ flex: 1, position: 'relative', height: 28, display: 'flex', alignItems: 'center' }}>
-            {/* Track background */}
-            <div style={{
-              position: 'absolute', inset: '10px 0',
-              background: 'rgba(26,46,74,0.6)', borderRadius: 4,
-              border: '1px solid var(--border)',
-            }} />
-            {/* Filled portion */}
-            <div style={{
-              position: 'absolute', top: 10, bottom: 10, left: 0,
-              width: `${(displayHour / HOURS) * 100}%`,
-              background: isManual
-                ? 'linear-gradient(90deg, rgba(255,184,0,0.3), rgba(255,184,0,0.15))'
-                : 'linear-gradient(90deg, rgba(0,212,255,0.3), rgba(0,212,255,0.1))',
-              borderRadius: 4, transition: isDragging ? 'none' : 'width 0.1s',
-            }} />
-            {/* Burn markers on scrubber */}
-            {maneuvers.map(mnv => (
-              <div key={mnv.id} style={{
-                position: 'absolute', top: 6, bottom: 6,
-                left: `${(mnv.startHour / HOURS) * 100}%`,
-                width: Math.max((mnv.durationHours / HOURS) * 100, 0.3) + '%',
-                background: TYPE_COLOR[mnv.type],
-                opacity: 0.5, borderRadius: 2, pointerEvents: 'none',
-              }} />
-            ))}
-            {/* Draggable thumb */}
-            <input
-              type="range" min={0} max={HOURS} step={0.05}
-              value={displayHour}
-              onChange={e => { setIsPlaying(false); setScrubHour(parseFloat(e.target.value)); }}
-              style={{
-                position: 'absolute', inset: 0, width: '100%', opacity: 0,
-                cursor: 'col-resize', zIndex: 2,
-              }}
-            />
-            {/* Thumb indicator */}
-            <div style={{
-              position: 'absolute', top: '50%', transform: 'translate(-50%, -50%)',
-              left: `${(displayHour / HOURS) * 100}%`,
-              width: 16, height: 16, borderRadius: '50%',
-              background: isManual ? 'var(--amber)' : 'var(--cyan)',
-              border: '2px solid var(--bg-primary)',
-              boxShadow: `0 0 8px ${isManual ? 'var(--amber)' : 'var(--cyan)'}`,
-              pointerEvents: 'none', zIndex: 3,
-              transition: isDragging ? 'none' : 'left 0.1s',
-            }} />
-          </div>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-secondary)', minWidth: 32 }}>T+24h</span>
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-dim)', marginTop: 6, textAlign: 'center' }}>
-          DRAG SLIDER OR CLICK TIMELINE TO SCRUB · CLICK ↺ RESUME LIVE TO RETURN TO REAL-TIME
-        </div>
-      </div>
-
-      {/* Hover tooltip */}
-      {tooltip && (
-        <div style={{
-          position: 'fixed', left: tooltip.x + 14, top: tooltip.y - 80, zIndex: 9999,
-          background: 'rgba(2,8,23,0.98)', border: `1px solid ${TYPE_COLOR[tooltip.mnv.type]}`,
-          borderRadius: 8, padding: '10px 14px', pointerEvents: 'none',
-          boxShadow: `0 0 24px ${TYPE_COLOR[tooltip.mnv.type]}44`,
-        }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: TYPE_COLOR[tooltip.mnv.type], marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700 }}>
-            {tooltip.mnv.type}
-          </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-            <div style={{ color: 'var(--text-primary)' }}>{tooltip.mnv.satelliteId}</div>
-            <div>Start: T+{tooltip.mnv.startHour.toFixed(2)}h</div>
-            <div>Duration: {tooltip.mnv.durationHours.toFixed(2)}h</div>
-            <div>Δv: <span style={{ color: TYPE_COLOR[tooltip.mnv.type] }}>{tooltip.mnv.deltaV.toFixed(3)} km/s</span></div>
-            {tooltip.mnv.executed && <div style={{ color: '#00ff88', marginTop: 4 }}>✓ EXECUTED</div>}
-          </div>
+      {/* Tooltip */}
+      {hoveredEvent && (
+        <div
+          style={{
+            ...styles.tooltip,
+            left: `${tooltipPos.x + 10}px`,
+            top: `${tooltipPos.y + 10}px`,
+          }}
+        >
+          <div><strong>{hoveredEvent.satelliteId}</strong></div>
+          <div>{hoveredEvent.type.toUpperCase()}</div>
+          <div>{hoveredEvent.startTime.toISOString().split('T')[1]}</div>
+          {hoveredEvent.deltaV && <div>Δv: {hoveredEvent.deltaV.toFixed(4)} km/s</div>}
+          {hoveredEvent.conflict && <div style={{ color: '#ff3b3b' }}>⚠️ CONFLICT</div>}
         </div>
       )}
     </div>

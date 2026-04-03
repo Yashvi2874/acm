@@ -65,25 +65,26 @@ export default function App() {
             console.log(`Auto-refreshing data: ${data.satellites.length} satellites, ${data.debris.length} debris`);
             
             // Transform backend format to frontend Satellite interface
+            const MU = 398600.4418;
             const transformedSats = data.satellites.map((sat: any) => {
-              // Extract position and velocity vectors
               const pos = sat.r ? [sat.r.x, sat.r.y, sat.r.z] as [number, number, number] : [0, 0, 0];
               const vel = sat.v ? [sat.v.x, sat.v.y, sat.v.z] as [number, number, number] : [0, 0, 0];
-              
-              // Calculate orbital elements from position/velocity
               const r = Math.sqrt(pos[0]**2 + pos[1]**2 + pos[2]**2);
-              const v = Math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2);
-              const inc = Math.acos(pos[2] / r) || 0;
-              const phase = Math.atan2(pos[1], pos[0]) || 0;
-              const speed = v / r || 0.001;
-              
+              // Inclination from angular momentum vector h = r × v
+              const hx = pos[1]*vel[2] - pos[2]*vel[1];
+              const hy = pos[2]*vel[0] - pos[0]*vel[2];
+              const hz = pos[0]*vel[1] - pos[1]*vel[0];
+              const h = Math.sqrt(hx*hx + hy*hy + hz*hz);
+              const inc = h > 0 ? Math.acos(Math.max(-1, Math.min(1, hz / h))) : 0;
+              const phase = Math.atan2(pos[1], pos[0]);
+              // Angular speed from circular orbit approximation
+              const speed = Math.sqrt(MU / (r * r * r)) * 0.016 * 40;
               return {
                 id: sat.id || `SAT-${Math.random().toString(36).substr(2, 9)}`,
-                name: sat.name || `Satellite-${sat.id?.substr(-4) || 'UNK'}`,
-                status: (sat.status === 'critical' || sat.status === 'warning') ? sat.status : 'nominal',
-                fuel: sat.fuel_kg !== undefined ? sat.fuel_kg : 100,
-                pos: pos,
-                vel: vel,
+                name: sat.name || sat.id || 'Unknown',
+                status: (['nominal','warning','critical'].includes(sat.status) ? sat.status : 'nominal') as 'nominal'|'warning'|'critical',
+                fuel: sat.fuel_kg !== undefined ? Math.round(sat.fuel_kg * 200) : 100,
+                pos, vel,
                 orbitRadius: r,
                 orbitInclination: inc,
                 orbitPhase: phase,
@@ -134,64 +135,9 @@ export default function App() {
 
   const selectedSat = satellites.find(s => s.id === selectedId) ?? null;
 
-  // ── Collision detection + auto-avoidance ─────────────────────────────
-  const WARN_DIST = 180;   // km — show warning
-  const AVOID_DIST = 80;   // km — trigger auto-maneuver
-
-  useEffect(() => {
-    const alerts: { satId: string; debIdx: number; dist: number }[] = [];
-    satellites.forEach(sat => {
-      if (sat.autoManeuvering) return;
-      let closest = { dist: Infinity, idx: -1 };
-      debris.forEach((d, idx) => {
-        const dx = sat.pos[0] - d.x, dy = sat.pos[1] - d.y, dz = sat.pos[2] - d.z;
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if (dist < closest.dist) closest = { dist, idx };
-      });
-
-      if (closest.dist < WARN_DIST) {
-        alerts.push({ satId: sat.id, debIdx: closest.idx, dist: closest.dist });
-        setSatellites(prev => prev.map(s =>
-          s.id === sat.id ? { ...s, collisionRisk: true, threatDebrisIdx: closest.idx } : s
-        ));
-      } else {
-        setSatellites(prev => prev.map(s =>
-          s.id === sat.id && s.collisionRisk && !s.autoManeuvering
-            ? { ...s, collisionRisk: false, threatDebrisIdx: undefined } : s
-        ));
-      }
-
-      // Auto-avoidance burn
-      if (closest.dist < AVOID_DIST && !autoManeuveredRef.current.has(sat.id)) {
-        autoManeuveredRef.current.add(sat.id);
-        const mnvId = `AUTO-${sat.id}-${Date.now()}`;
-        const deltaV = 0.3 + Math.random() * 0.2;
-        const fuelCost = Math.round(deltaV * 20);
-        setSatellites(prev => prev.map(s => {
-          if (s.id !== sat.id) return s;
-          const newRadius = s.orbitRadius + deltaV * 200;
-          const newFuel = Math.max(0, s.fuel - fuelCost);
-          return {
-            ...s, orbitRadius: newRadius, fuel: newFuel, collisionRisk: false,
-            status: newFuel < 20 ? 'critical' : newFuel < 50 ? 'warning' : 'nominal',
-            autoManeuvering: true, lastManeuver: mnvId, threatDebrisIdx: undefined,
-          };
-        }));
-        setManeuvers(prev => [...prev, {
-          id: mnvId, satelliteId: sat.id, type: 'avoidance',
-          startHour: 0, durationHours: 0.1, deltaV, executed: true,
-        }]);
-        setFlaringId(sat.id);
-        setTimeout(() => setFlaringId(null), 3000);
-        setTimeout(() => {
-          setSatellites(prev => prev.map(s =>
-            s.id === sat.id ? { ...s, autoManeuvering: false } : s
-          ));
-          autoManeuveredRef.current.delete(sat.id);
-        }, 5000);
-      }
-    });
-  }, [tick]);
+  // Collision risk is driven entirely by backend CDM warnings —
+  // the snapshot already sets collisionRisk=true on affected satellites.
+  // No client-side distance loop needed.
 
   const handleHover = useCallback((id: string | null, x: number, y: number) => {    hoveredIdRef.current = id;
     setHoveredId(id);
@@ -420,7 +366,6 @@ export default function App() {
           <CornerDeco pos="br" />
 
           <GlobeScene
-            key={`globe-${satellites.length}-${debris.length}`}
             satellites={satellites}
             debris={debris}
             groundStations={GROUND_STATIONS}

@@ -11,9 +11,11 @@ import { useEffect, useRef, useCallback } from 'react';
 import type { Satellite, DebrisPoint } from './types';
 
 const API = import.meta.env.VITE_API_URL ?? '';
-const POLL_MS = 200;
-const SIM_DT = 10.0;
-const MU = 398600.4418;
+// Poll every 500ms — enough for smooth animation at 60fps (Three.js animates locally)
+// Slower poll reduces server load when handling 1000+ debris objects
+const POLL_MS = 500;
+const SIM_DT  = 10.0;
+const MU      = 398600.4418;
 
 interface SimSnapshot {
   satellites: Satellite[];

@@ -526,11 +526,11 @@ export default function GlobeScene({ satellites, debris, groundStations, simTime
         flareRing.scale.setScalar(1 + (1 - sc.flareProgress) * 7);
       }
 
-      // Advance satellites
+      // Advance satellites - FASTER ORBITAL MOTION (40x speed for visualization)
       sc?.satGroups.forEach((group: THREE.Group) => {
         const o = group.userData.satOrbit;
         if (o) {
-          o.theta += o.speed;
+          o.theta += o.speed * 40;  // 40x faster for realistic visual motion
           const pos = new THREE.Vector3()
             .addScaledVector(o.p0, Math.cos(o.theta))
             .addScaledVector(o.u, Math.sin(o.theta));
